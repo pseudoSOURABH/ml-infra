@@ -28,8 +28,11 @@ spec:
       serviceAccountName: api-sa
       containers:
         - name: frontend
-          # IMAGE_TAG = COMMIT_SHA set by cloudbuild deploy step
-          image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/ml-repo/frontend:${IMAGE_TAG}
+          # @@IMAGE_TAG@@ is replaced by deploy-k8s.sh with the rich tag
+          # computed in the cloudbuild compute-image-tag step:
+          # format: {short-sha}-{sanitized-branch}-{YYYYMMDD}
+          # e.g.    a1b2c3d4-feat-deploy-model-20260413
+          image: @@REGION@@-docker.pkg.dev/@@PROJECT_ID@@/ml-repo/frontend:@@IMAGE_TAG@@
           imagePullPolicy: Always
           ports:
             - containerPort: 8501

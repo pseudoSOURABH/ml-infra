@@ -8,21 +8,49 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
+  # ── Compute rich image tag ─────────────────────────────────────────────────
+  # Tag format: {short-sha}-{sanitized-branch}-{YYYYMMDD}
+  # e.g.  a1b2c3d-feat-deploy-model-20260413
+  # Written to /workspace/image_tag.env so every subsequent step reads the
+  # exact same value — no drift between build and deploy steps.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'compute-image-tag'
+    waitFor: ['-']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        SHORT_SHA="${COMMIT_SHA:0:8}"
+        DATE_TAG=$(date -u +%Y%m%d)
+
+        # Sanitize branch name: lowercase, replace non-alphanumeric with '-',
+        # truncate to 30 chars so the full tag stays Docker-safe (<128 chars).
+        BRANCH_SAFE=$(echo "${BRANCH_NAME}" \
+          | tr '[:upper:]' '[:lower:]' \
+          | sed 's/[^a-z0-9]/-/g' \
+          | cut -c1-30 \
+          | sed 's/-*$//')
+
+        IMAGE_TAG="${SHORT_SHA}-${BRANCH_SAFE}-${DATE_TAG}"
+
+        echo "IMAGE_TAG=${IMAGE_TAG}" > /workspace/image_tag.env
+        echo "✓ Image tag: ${IMAGE_TAG}"
+
   # ── Build pipeline-runner ──────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
-    waitFor: ['-']
+    waitFor: ['compute-image-tag']
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
-      - '--cache-from'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
-      - '-f'
-      - 'Dockerfile.pipeline'
-      - '.'
+      - '-c'
+      - |
+        source /workspace/image_tag.env
+        docker build \
+          -t us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:${IMAGE_TAG} \
+          -t us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
+          --cache-from us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
+          -f Dockerfile.pipeline \
+          .
 
   # Push immediately — must exist before run-pipeline references it by name
   - name: 'gcr.io/cloud-builders/docker'
@@ -32,10 +60,16 @@ steps:
     args:
       - '-c'
       - |
-        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA
+        source /workspace/image_tag.env
+        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:${IMAGE_TAG}
         docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest
 
   # ── GCS cache check ────────────────────────────────────────────────────────
+  # MODEL_GCS_URI is the canonical path used by BOTH run_pipeline.py (upload)
+  # and the Triton InferenceService (storageUri).  It is defined once here as
+  # _MODEL_GCS_URI in substitutions and written to a shared env file so the
+  # deploy step can inject the exact same value into the K8s manifest — no
+  # risk of the two values drifting apart.
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'check-model-cache'
     waitFor: ['-']
@@ -43,7 +77,11 @@ steps:
     args:
       - '-c'
       - |
-        if gsutil -q stat gs://$PROJECT_ID-ml-models/clinical_assertion/.pipeline_done 2>/dev/null; then
+        # Write the canonical model GCS URI to the shared env file so the
+        # deploy step can read it without re-constructing the path.
+        echo "MODEL_GCS_URI=${_MODEL_GCS_URI}" > /workspace/model_gcs.env
+
+        if gsutil -q stat ${_MODEL_GCS_URI}/.pipeline_done 2>/dev/null; then
           echo "CACHE_HIT=true" > /workspace/pipeline_cache.env
           echo "✓ Model artifact found in GCS — skipping pipeline."
         else
@@ -53,9 +91,8 @@ steps:
 
   # ── Run model pipeline ─────────────────────────────────────────────────────
   # IMPORTANT: Cloud Build does NOT substitute variables in the `name` field.
-  # Solution: use a fixed :latest tag for the runner name, but the actual
-  # image was just pushed above with both :latest AND :$COMMIT_SHA tags,
-  # so :latest == this commit's image at this point in the build.
+  # We use :latest here — that tag was just pushed above and equals this
+  # commit's image, so there is no stale-image risk within the same build.
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
     waitFor: ['push-pipeline-image', 'check-model-cache']
@@ -66,8 +103,9 @@ steps:
       - 'bvanaken/clinical-assertion-negation-bert'
       - '--output'
       - './output'
+      # ↓ Same URI written to /workspace/model_gcs.env — single source of truth
       - '--gcs-uri'
-      - 'gs://$PROJECT_ID-ml-models/clinical_assertion'
+      - '${_MODEL_GCS_URI}'
       - '--project-id'
       - '$PROJECT_ID'
       - '--threshold'
@@ -81,36 +119,35 @@ steps:
   # ── Build backend ──────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
-    waitFor: ['run-pipeline']
+    waitFor: ['run-pipeline', 'compute-image-tag']
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
-      - '-f'
-      - 'Dockerfile.backend'
-      - '--build-arg'
-      - 'TRITON_GRPC_PORT=8001'
-      - '--cache-from'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
-      - '.'
+      - '-c'
+      - |
+        source /workspace/image_tag.env
+        docker build \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:${IMAGE_TAG} \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest \
+          -f Dockerfile.backend \
+          --build-arg TRITON_GRPC_PORT=8001 \
+          --cache-from ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest \
+          .
 
   # ── Build frontend ─────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
-    waitFor: ['run-pipeline']
+    waitFor: ['run-pipeline', 'compute-image-tag']
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
-      - '-f'
-      - 'Dockerfile.frontend'
-      - '--cache-from'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
-      - '.'
+      - '-c'
+      - |
+        source /workspace/image_tag.env
+        docker build \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:${IMAGE_TAG} \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest \
+          -f Dockerfile.frontend \
+          --cache-from ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest \
+          .
 
   # ── Push backend + frontend ────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
@@ -120,9 +157,10 @@ steps:
     args:
       - '-c'
       - |
-        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA &
+        source /workspace/image_tag.env
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:${IMAGE_TAG} &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest &
-        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA &
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:${IMAGE_TAG} &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest &
         wait
 
@@ -134,38 +172,29 @@ steps:
     args:
       - '-c'
       - |
-        apt-get update -qq && apt-get install -y -qq gettext-base
-
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-          echo "Deploying commit $COMMIT_SHA..."
+          echo "🚀 Deploying..."
 
-          gcloud container clusters get-credentials ${_CLUSTER} \
-            --region ${_REGION} --project $PROJECT_ID
+          source /workspace/image_tag.env
+          source /workspace/model_gcs.env
 
-          # All vars used by envsubst across manifests — defined exactly once here.
-          # k8s manifests use: ${IMAGE_TAG}, ${PROJECT_ID}, ${REGION}, ${MODEL_GCS_URI}
-          export IMAGE_TAG="$COMMIT_SHA"
-          export REGION="${_REGION}"
-          # MODEL_GCS_URI: same bucket path written by run-pipeline in this build
-          export MODEL_GCS_URI="gs://$PROJECT_ID-ml-models/clinical_assertion"
+          echo "  IMAGE_TAG:     ${IMAGE_TAG}"
+          echo "  MODEL_GCS_URI: ${MODEL_GCS_URI}"
 
-          kubectl apply -f k8s/namespaces.yaml
+          cp -r scripts /workspace/ 2>/dev/null || true
 
-          # envsubst with explicit var list — prevents clobbering unrelated ${} in YAML
-          envsubst '${MODEL_GCS_URI}' \
-            < k8s/triton-inference.yaml | kubectl apply -f -
+          # IMAGE_TAG (rich tag) and MODEL_GCS_URI are both sourced from the
+          # shared env files written earlier — single source of truth for both.
+          bash /workspace/scripts/deploy-k8s.sh \
+            "${_CLUSTER}" \
+            "${_REGION}" \
+            "$PROJECT_ID" \
+            "${IMAGE_TAG}" \
+            "${MODEL_GCS_URI}"
 
-          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
-            < k8s/backend-deployment.yaml | kubectl apply -f -
-
-          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
-            < k8s/frontend-deployment.yaml | kubectl apply -f -
-
-          kubectl apply -f k8s/ingress.yaml
-
-          echo "✓ Deployment complete — image: $COMMIT_SHA  model: $MODEL_GCS_URI"
+          echo "✓ Deployment complete"
         else
-          echo "Skipping deployment for branch: $BRANCH_NAME"
+          echo "⏭ Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
       - 'USE_GKE_GCLOUD_AUTH_PLUGIN=True'
@@ -196,13 +225,17 @@ steps:
         sys.exit(1)"
         fi
 
+# ── Substitutions ──────────────────────────────────────────────────────────
 # Only user-defined substitutions here (_PREFIX required).
-# Built-ins like $PROJECT_ID, $COMMIT_SHA, $BRANCH_NAME, $TAG_NAME
-# are provided automatically by Cloud Build — never declare them here.
+# Built-ins ($PROJECT_ID, $COMMIT_SHA, $BRANCH_NAME, $TAG_NAME) are provided
+# automatically by Cloud Build — never declare them here.
 substitutions:
   _REGION: us-central1
   _CLUSTER: ml-platform-cluster
-  _IMAGE_TAG: '$COMMIT_SHA'  # Custom substitution
+  # Single declaration of the model GCS path.
+  # run_pipeline.py uploads TO this URI.
+  # deploy-k8s.sh injects this URI into the Triton InferenceService manifest.
+  # Both sides always agree because they read the same value.
   _MODEL_GCS_URI: 'gs://$PROJECT_ID-ml-models/clinical_assertion'
 
 options:

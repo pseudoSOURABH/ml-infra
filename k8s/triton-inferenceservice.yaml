@@ -13,9 +13,21 @@ spec:
       modelFormat:
         name: triton
       runtime: triton
-      # MODEL_GCS_URI is set in cloudbuild deploy step to the same
-      # bucket path written by run_pipeline.py in the same build.
-      storageUri: "${MODEL_GCS_URI}"
+      # @@MODEL_GCS_URI@@ is replaced by deploy-k8s.sh with the value sourced
+      # from /workspace/model_gcs.env, which is written by the check-model-cache
+      # step using _MODEL_GCS_URI from substitutions.
+      #
+      # That is the exact same URI passed to run_pipeline.py via --gcs-uri, so
+      # the path Triton reads from is always the path the pipeline uploaded to.
+      #
+      # run_pipeline.py uploads the Triton model repository layout:
+      #   {_MODEL_GCS_URI}/config.pbtxt
+      #   {_MODEL_GCS_URI}/1/model.onnx
+      #   {_MODEL_GCS_URI}/1/tokenizer.json   (etc.)
+      #
+      # KServe/Triton expects storageUri to point at the model directory
+      # (one level above the version directory), which matches exactly.
+      storageUri: "@@MODEL_GCS_URI@@"
       resources:
         requests:
           cpu: "1000m"
