@@ -8,7 +8,7 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
-  # Step 0b: Build the pipeline runner image (cached after first run)
+  # Step 0b: Build the pipeline runner image (cached after first runn)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
     waitFor: ['-']   # Run immediately, no dependency
