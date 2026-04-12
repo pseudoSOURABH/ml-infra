@@ -11,7 +11,7 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1        # Allow 1 extra pod during rollout
+      maxSurge: 1        # Allow 1 extra pod during rolloutt
       maxUnavailable: 0  # Zero downtime guarantee
   selector:
     matchLabels:
