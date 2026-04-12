@@ -1,12 +1,6 @@
 # cloudbuild.yaml
-# Optimizations:
-#   1. GCS artifact cache check — skips full pipeline if quantized model already in GCS
-#   2. pipeline-runner image built in parallel with setup (no blocking)
-#   3. backend + frontend builds start immediately after cache-check (not after full pipeline)
-#   4. Reduced image size via Dockerfile.pipeline slim base (see comments)
-
 steps:
-  # ── Setup ────────────────────────────────────────────────────────────────
+  # ── Setup ─────────────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'setup'
     entrypoint: 'bash'
@@ -15,12 +9,16 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
-  # ── Build pipeline-runner image (parallel, cached aggressively) ──────────
+  # ── Build pipeline-runner image tagged with COMMIT_SHA (not just :latest) ─
+  # Using COMMIT_SHA ensures the running image always matches the code.
+  # :latest is also pushed so --cache-from works on next build.
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
     waitFor: ['-']
     args:
       - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA'
       - '-t'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
       - '--cache-from'
@@ -29,13 +27,21 @@ steps:
       - 'Dockerfile.pipeline'
       - '.'
 
-  # ── GCS cache check — did we already process this model? ─────────────────
-  # Checks for the sentinel file written by run_pipeline.py on success.
-  # If it exists, the run-pipeline step becomes a no-op (exits 0 immediately).
-  # To force a re-run: delete gs://$PROJECT_ID-ml-models/clinical_assertion/.pipeline_done
+  # Push pipeline-runner immediately so the tag exists before run-pipeline uses it
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-pipeline-image'
+    waitFor: ['build-pipeline-image']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA
+        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest
+
+  # ── GCS cache check ────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'check-model-cache'
-    waitFor: ['-']   # runs immediately, no deps
+    waitFor: ['-']
     entrypoint: 'bash'
     args:
       - '-c'
@@ -48,13 +54,11 @@ steps:
           echo "No cached artifact — pipeline will run."
         fi
 
-  # ── Run model pipeline (skipped on cache hit) ────────────────────────────
-  # run_pipeline.py reads /workspace/pipeline_cache.env and exits 0 immediately
-  # if CACHE_HIT=true. This means the container still spins up but does nothing
-  # meaningful — total skip time is ~5s vs ~10-15min for a full run.
-  - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+  # ── Run model pipeline ─────────────────────────────────────────────────────
+  # Uses COMMIT_SHA-tagged image — never the ambiguous :latest at runtime
+  - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA'
     id: 'run-pipeline'
-    waitFor: ['build-pipeline-image', 'check-model-cache']
+    waitFor: ['push-pipeline-image', 'check-model-cache']
     entrypoint: 'python'
     args:
       - 'model_pipeline/run_pipeline.py'
@@ -69,16 +73,12 @@ steps:
       - '--threshold'
       - '0.95'
       - '--cache-env'
-      - '/workspace/pipeline_cache.env'   # ← new flag, checked at startup
+      - '/workspace/pipeline_cache.env'
     env:
       - 'PROJECT_ID=$PROJECT_ID'
-      # HuggingFace cache dir — maps to /workspace so Cloud Build persists
-      # across steps on the same worker (best-effort, not guaranteed)
       - 'HF_HOME=/workspace/.hf_cache'
-      - 'TRANSFORMERS_CACHE=/workspace/.hf_cache'
 
-  # ── Build backend + frontend in parallel (no longer gated on pipeline) ───
-  # Both now wait only on run-pipeline (which exits fast on cache hit).
+  # ── Build backend ──────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['run-pipeline']
@@ -86,6 +86,8 @@ steps:
       - 'build'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '-f'
       - 'Dockerfile.backend'
       - '--build-arg'
@@ -94,6 +96,7 @@ steps:
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '.'
 
+  # ── Build frontend ─────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     waitFor: ['run-pipeline']
@@ -101,13 +104,15 @@ steps:
       - 'build'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
       - '-f'
       - 'Dockerfile.frontend'
       - '--cache-from'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
       - '.'
 
-  # ── Push all images ───────────────────────────────────────────────────────
+  # ── Push backend + frontend ────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-images'
     waitFor: ['build-backend', 'build-frontend']
@@ -116,18 +121,12 @@ steps:
       - '-c'
       - |
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA &
-        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA &
-        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest &
-        # Also tag backend/frontend as :latest so --cache-from works next run
-        docker tag ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA \
-                   ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest
-        docker tag ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA \
-                   ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest &
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest &
-        wait   # wait for all background pushes
+        wait
 
-  # ── Deploy to GKE ─────────────────────────────────────────────────────────
+  # ── Deploy to GKE ──────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'deploy'
     waitFor: ['push-images', 'setup']
@@ -138,32 +137,45 @@ steps:
         apt-get update -qq && apt-get install -y -qq gettext-base
 
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-          echo "Conditions met. Starting deployment..."
+          echo "Deploying commit $COMMIT_SHA to cluster $_CLUSTER..."
 
           gcloud container clusters get-credentials $_CLUSTER \
             --region $_REGION --project $PROJECT_ID
 
+          # These are the ONLY two vars needed by envsubst across all manifests.
+          # Every manifest uses ${IMAGE_TAG} and ${PROJECT_ID} — nothing else.
           export IMAGE_TAG=$COMMIT_SHA
+          export PROJECT_ID=$PROJECT_ID
+          export REGION=$_REGION
+          # GCS model URI — same bucket written to by run-pipeline above
+          export MODEL_GCS_URI="gs://${PROJECT_ID}-ml-models/clinical_assertion"
 
           kubectl apply -f k8s/namespaces.yaml
-          kubectl apply -f k8s/kserve-config.yaml
 
-          envsubst < k8s/triton-inference.yaml | kubectl apply -f -
-          envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
-          envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
-          envsubst < k8s/ingress.yaml | kubectl apply -f -
+          # Triton — substitutes MODEL_GCS_URI into storageUri
+          envsubst '${PROJECT_ID} ${MODEL_GCS_URI}' \
+            < k8s/triton-inference.yaml | kubectl apply -f -
 
-          echo "Deployment complete!"
+          # Backend and frontend — substitutes IMAGE_TAG, PROJECT_ID, REGION
+          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
+            < k8s/backend-deployment.yaml | kubectl apply -f -
+
+          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
+            < k8s/frontend-deployment.yaml | kubectl apply -f -
+
+          kubectl apply -f k8s/ingress.yaml
+
+          echo "✓ Deployment complete — image tag: $COMMIT_SHA"
         else
           echo "Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
       - 'PROJECT_ID=$PROJECT_ID'
-      - 'REGION=$_REGION'
       - 'COMMIT_SHA=$COMMIT_SHA'
       - '_CLUSTER=$_CLUSTER'
+      - '_REGION=$_REGION'
 
-  # ── Smoke tests ───────────────────────────────────────────────────────────
+  # ── Smoke tests ────────────────────────────────────────────────────────────
   - name: 'python:3.12-slim'
     id: 'smoke-tests'
     waitFor: ['deploy']

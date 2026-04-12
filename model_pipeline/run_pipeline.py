@@ -153,6 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--project-id",   default="")
     parser.add_argument("--threshold",    type=float, default=0.95)
     parser.add_argument("--skip-quantize", action="store_true")
+    parser.add_argument("--cache-env",default="",help="Path to cache env file written by check-model-cache Cloud Build step.")
     args = parser.parse_args()
 
     pid = args.project_id or os.getenv("GOOGLE_CLOUD_PROJECT", "")

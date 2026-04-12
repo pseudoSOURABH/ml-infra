@@ -1,20 +1,21 @@
-# KServe InferenceService for Triton with CPU optimization
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: clinical-assertion
   namespace: triton
   annotations:
-    serving.kserve.io/deploymentMode: "Serverless"  # Use Knative for autoscaling
+    serving.kserve.io/deploymentMode: "Serverless"
 spec:
   predictor:
     minReplicas: 1
-    maxReplicas: 3  # Cost-efficient scaling
+    maxReplicas: 3
     model:
       modelFormat:
         name: triton
       runtime: triton
-      storageUri: "gs://${PROJECT_ID}-ml-models/clinical_assertion"  # Will be substituted
+      # MODEL_GCS_URI is set in cloudbuild deploy step to the same
+      # bucket path written by run_pipeline.py in the same build.
+      storageUri: "${MODEL_GCS_URI}"
       resources:
         requests:
           cpu: "1000m"
@@ -23,7 +24,6 @@ spec:
           cpu: "2000m"
           memory: "4Gi"
       env:
-        # CPU-specific optimizations for ONNX Runtime
         - name: OMP_NUM_THREADS
           value: "2"
         - name: ONNXRUNTIME_EXECUTION_MODE
@@ -36,7 +36,6 @@ spec:
       - spec:
           containers:
             - name: kserve-container
-              # Use official Triton image with ONNX Runtime
               image: docker.io/kserve/tritonserver:23.12-py3
               command: ["tritonserver"]
               args:
@@ -46,7 +45,6 @@ spec:
                 - "--grpc-port=8001"
                 - "--metrics-port=8002"
                 - "--log-verbose=1"
-                # CPU optimizations
                 - "--backend-config=onnxruntime,cpu-threads=2"
                 - "--backend-config=onnxruntime,inter-op-parallelism=2"
                 - "--backend-config=onnxruntime,intra-op-parallelism=2"
@@ -71,23 +69,17 @@ spec:
                 initialDelaySeconds: 60
                 periodSeconds: 30
                 timeoutSeconds: 5
-          # Node selector for CPU-optimized pool
           nodeSelector:
             cloud.google.com/gke-nodepool: cpu-app-pool
-          # Service account with GCS access via Workload Identity
-          serviceAccountName: triton-sa 
-          # Autoscaling configuration (Knative)
+          serviceAccountName: triton-sa
           metadata:
             annotations:
-              autoscaling.knative.dev/target: "70"  # Target CPU utilization %
+              autoscaling.knative.dev/target: "70"
               autoscaling.knative.dev/window: "30s"
               autoscaling.knative.dev/panic-window-percentage: "10"
               autoscaling.knative.dev/panic-threshold-percentage: "200"
-              # Scale to zero after inactivity (cost savings)
               autoscaling.knative.dev/scale-to-zero-pod-retention-period: "5m"
-
-
-# k8s/triton/service.yaml
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -96,7 +88,7 @@ metadata:
   labels:
     app: clinical-triton
 spec:
-  type: ClusterIP  # ✅ Internal only - accessed via gRPC by backend
+  type: ClusterIP
   selector:
     serving.kserve.io/inferenceservice: clinical-assertion
   ports:
