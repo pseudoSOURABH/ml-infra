@@ -1,8 +1,4 @@
-# Cloud Build pipeline for ML inference platform
-# Triggered on: feature branch commits, tags (auto-deploy)
-
-steps:
-  # Step 0: Setup - Install dependencies
+# Step 0: Setup - Only GKE components
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'setup'
     entrypoint: 'bash'
@@ -10,7 +6,6 @@ steps:
       - '-c'
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
-        pip install -r model_pipeline/requirements.txt
 
   # Step 1: Run model processing pipeline
   - name: 'python:3.12-slim'
@@ -20,6 +15,9 @@ steps:
     args:
       - '-c'
       - |
+        # Install pip dependencies HERE where python exists
+        pip install --no-cache-dir -r model_pipeline/requirements.txt
+        
         python model_pipeline/run_pipeline.py \
           --model bvanaken/clinical-assertion-negation-bert \
           --output ./output \
