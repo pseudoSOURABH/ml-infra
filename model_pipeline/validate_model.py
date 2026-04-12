@@ -17,116 +17,95 @@ TEST_CASES = [
     ("No signs of pneumonia were observed.", "ABSENT"),
 ]
 
+# bvanaken/clinical-assertion-negation-bert label mapping
 LABEL_MAP = {0: "PRESENT", 1: "ABSENT", 2: "POSSIBLE"}
 
 
 def evaluate_model(
     model_path: str,
     tokenizer_path: str,
-    accuracy_threshold: float = 0.95
+    accuracy_threshold: float = 0.95,
 ) -> bool:
     """
-    Evaluate optimized ONNX model on assertion classification test cases.
+    Run test cases against the ONNX model and check accuracy threshold.
 
     Args:
-        model_path: Path to model.onnx file (string or Path)
-        tokenizer_path: Directory containing tokenizer files (string or Path)
-        accuracy_threshold: Minimum accuracy fraction to pass (e.g. 0.95)
+        model_path: Path to model.onnx
+        tokenizer_path: Directory containing tokenizer files
+        accuracy_threshold: Float 0-1, minimum pass accuracy
 
     Returns:
-        True if accuracy >= threshold, False otherwise
+        True if accuracy >= threshold
     """
-    # FIX: Normalize inputs to Path objects here rather than relying on callers.
     model_path = Path(model_path)
     tokenizer_path = Path(tokenizer_path)
 
     logger.info(f"Loading tokenizer from: {tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
 
-    logger.info(f"Loading ONNX model: {model_path}")
+    logger.info(f"Loading model from: {model_path}")
     model = ORTModelForSequenceClassification.from_pretrained(
         str(model_path.parent),
-        file_name=model_path.name
+        file_name=model_path.name,
     )
 
     correct = 0
     results = []
 
-    for sentence, expected_label in TEST_CASES:
+    for sentence, expected in TEST_CASES:
         try:
             inputs = tokenizer(
                 sentence,
                 return_tensors="pt",
                 truncation=True,
-                max_length=512
+                max_length=512,
             )
             outputs = model(**inputs)
             logits = outputs.logits.detach().numpy()
             pred_idx = int(np.argmax(logits, axis=1)[0])
             pred_label = LABEL_MAP.get(pred_idx, "UNKNOWN")
 
-            # Softmax for confidence score
-            exp_logits = np.exp(logits - np.max(logits))  # numerically stable
-            probs = exp_logits / exp_logits.sum(axis=1, keepdims=True)
+            # Numerically stable softmax for confidence
+            shifted = logits - np.max(logits)
+            probs = np.exp(shifted) / np.exp(shifted).sum(axis=1, keepdims=True)
             score = float(np.max(probs))
 
-            # CONDITIONAL is not in this model's label set — map POSSIBLE -> CONDITIONAL
-            if expected_label == "CONDITIONAL" and pred_label == "POSSIBLE":
-                is_correct = True
-                pred_label = "CONDITIONAL"
-            else:
-                is_correct = (pred_label == expected_label)
-
+            # CONDITIONAL maps to POSSIBLE in this model's label set
+            is_correct = (pred_label == expected) or (
+                expected == "CONDITIONAL" and pred_label == "POSSIBLE"
+            )
             if is_correct:
                 correct += 1
+                pred_label = expected  # normalise for display
 
-            results.append({
-                "sentence": sentence[:50] + "..." if len(sentence) > 50 else sentence,
-                "expected": expected_label,
-                "predicted": pred_label,
-                "score": round(score, 4),
-                "correct": is_correct,
-            })
+            results.append((sentence[:55], expected, pred_label, score, is_correct))
 
         except Exception as e:
-            logger.error(f"Error on '{sentence}': {e}")
-            results.append({
-                "sentence": sentence,
-                "expected": expected_label,
-                "predicted": "ERROR",
-                "score": 0.0,
-                "correct": False,
-            })
+            logger.error(f"Inference error on '{sentence}': {e}")
+            results.append((sentence[:55], expected, "ERROR", 0.0, False))
 
     accuracy = correct / len(TEST_CASES)
 
-    logger.info("\n=== Validation Results ===")
-    for r in results:
-        status = "✓" if r["correct"] else "✗"
-        logger.info(
-            f"{status} Expected: {r['expected']:11} | "
-            f"Predicted: {r['predicted']:11} | "
-            f"Score: {r['score']:.4f} | "
-            f"{r['sentence']}"
-        )
+    logger.info("=== Validation Results ===")
+    for sent, exp, pred, score, ok in results:
+        mark = "✓" if ok else "✗"
+        logger.info(f"  {mark} expected={exp:11s} predicted={pred:11s} score={score:.3f}  {sent}")
 
-    logger.info(f"\nAccuracy: {accuracy:.2%}  (threshold: {accuracy_threshold:.2%})")
+    logger.info(f"Accuracy: {accuracy:.0%} (threshold: {accuracy_threshold:.0%})")
 
     if accuracy >= accuracy_threshold:
-        logger.info("✓ Model validation PASSED")
+        logger.info("✓ Validation PASSED")
         return True
-    else:
-        logger.error("✗ Model validation FAILED — accuracy below threshold")
-        return False
+
+    logger.error("✗ Validation FAILED")
+    return False
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="Path to ONNX model file")
-    parser.add_argument("--tokenizer", required=True, help="Path to tokenizer directory")
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--threshold", type=float, default=0.95)
     args = parser.parse_args()
-
-    success = evaluate_model(args.model, args.tokenizer, args.threshold)
-    exit(0 if success else 1)
+    exit(0 if evaluate_model(args.model, args.tokenizer, args.threshold) else 1)

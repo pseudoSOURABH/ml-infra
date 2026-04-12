@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Hugging Face model to ONNX format."""
+"""Convert HuggingFace model to ONNX format."""
 
 import logging
 from pathlib import Path
@@ -10,47 +10,35 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def convert_model(
-    model_name: str,
-    output_dir: str,
-    opset: int = 13  # kept for CLI compatibility, no longer passed to from_pretrained
-) -> Path:
+def convert_model(model_name: str, output_dir: str) -> Path:
     """
-    Convert Hugging Face model to ONNX using optimum export API.
-
-    Args:
-        model_name: Hugging Face model identifier
-        output_dir: Output directory for ONNX model and tokenizer
-        opset: Retained as parameter for interface compatibility (not used internally)
-
-    Returns:
-        Path to converted ONNX model.onnx
+    Export a HuggingFace model to ONNX.
+    Returns path to model.onnx.
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Loading model: {model_name}")
 
-    # FIX: Removed deprecated `from_transformers=True` and invalid `opset=` kwarg.
-    # In optimum >= 1.14, use `export=True` only.
-    onnx_model = ORTModelForSequenceClassification.from_pretrained(
+    # export=True is the only correct API in optimum >= 1.14
+    # Never pass opset= or from_transformers= here
+    model = ORTModelForSequenceClassification.from_pretrained(
         model_name,
         export=True,
     )
+    model.save_pretrained(str(output_path))
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    onnx_model.save_pretrained(output_path)
-    tokenizer.save_pretrained(output_path)
+    tokenizer.save_pretrained(str(output_path))
 
     onnx_file = output_path / "model.onnx"
     if not onnx_file.exists():
         raise FileNotFoundError(
-            f"Export succeeded but model.onnx not found in {output_path}. "
-            f"Files present: {list(output_path.iterdir())}"
+            f"Export completed but model.onnx missing in {output_path}. "
+            f"Files: {list(output_path.iterdir())}"
         )
 
-    logger.info(f"Model saved to: {onnx_file}")
+    logger.info(f"ONNX model saved to: {onnx_file}")
     return onnx_file
 
 
@@ -58,8 +46,6 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="bvanaken/clinical-assertion-negation-bert")
-    parser.add_argument("--output", default="./model_repository/clinical_assertion/1")
-    parser.add_argument("--opset", type=int, default=13)  # kept for CLI compat
+    parser.add_argument("--output", default="./output/temp_conversion")
     args = parser.parse_args()
-
-    convert_model(args.model, args.output, args.opset)
+    convert_model(args.model, args.output)
