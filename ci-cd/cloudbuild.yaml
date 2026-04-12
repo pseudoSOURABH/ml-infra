@@ -1,4 +1,6 @@
-# Step 0: Setup - Only GKE components
+# Cloud Build pipeline for ML inference platform
+steps:
+  # Step 0: Setup - Install GKE components
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'setup'
     entrypoint: 'bash'
@@ -15,9 +17,7 @@
     args:
       - '-c'
       - |
-        # Install pip dependencies HERE where python exists
         pip install --no-cache-dir -r model_pipeline/requirements.txt
-        
         python model_pipeline/run_pipeline.py \
           --model bvanaken/clinical-assertion-negation-bert \
           --output ./output \
@@ -26,9 +26,8 @@
           --threshold 0.95
     env:
       - 'PROJECT_ID=$PROJECT_ID'
-      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
 
-  # Step 2: Build backend Docker image (Parallel)
+  # Step 2: Build backend Docker image
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['run-pipeline']
@@ -42,7 +41,7 @@
       - 'TRITON_GRPC_PORT=8001'
       - '.'
 
-  # Step 3: Build frontend Docker image (Parallel)
+  # Step 3: Build frontend Docker image
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     waitFor: ['run-pipeline']
@@ -54,7 +53,7 @@
       - 'Dockerfile.frontend'
       - '.'
 
-  # Step 4: Push images to Artifact Registry
+  # Step 4: Push images
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-images'
     waitFor: ['build-backend', 'build-frontend']
@@ -65,7 +64,7 @@
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA
 
-  # Step 5: Deploy to GKE (Conditional logic moved inside args)
+  # Step 5: Deploy to GKE
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'deploy'
     waitFor: ['push-images']
@@ -73,6 +72,9 @@
     args:
       - '-c'
       - |
+        # Install envsubst which is missing in the default gcloud image
+        apt-get update && apt-get install -y gettext-base
+
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
           echo "Conditions met. Starting deployment..."
           
@@ -91,14 +93,15 @@
           
           echo "Deployment complete!"
         else
-          echo "Skipping deployment: Branch $BRANCH_NAME does not match deployment criteria."
+          echo "Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
       - 'PROJECT_ID=$PROJECT_ID'
       - 'REGION=$_REGION'
       - 'COMMIT_SHA=$COMMIT_SHA'
+      - '_CLUSTER=$_CLUSTER'
 
-  # Step 6: Run smoke tests (Conditional logic moved inside args)
+  # Step 6: Smoke Tests
   - name: 'python:3.12-slim'
     id: 'smoke-tests'
     waitFor: ['deploy']
@@ -111,27 +114,25 @@
           python -c "
         import httpx, time, sys, os
         base = os.getenv('DOMAIN_NAME', 'http://your-static-ip')
-        for _ in range(60):
+        for _ in range(30):
             try:
-                r = httpx.get(f'{base}/health', timeout=10)
+                r = httpx.get(f'{base}/health', timeout=5)
                 if r.status_code == 200:
                     print('✓ Health check passed')
                     sys.exit(0)
-            except Exception as e:
-                print(f'Waiting for service... {e}')
+            except:
+                pass
             time.sleep(10)
         print('✗ Health check failed')
-        sys.exit(1)
-        "
-        else
-          echo "Skipping smoke tests for non-deployment branch."
+        sys.exit(1)"
         fi
 
 substitutions:
   _REGION: us-central1
   _CLUSTER: ml-platform-cluster
 
-timeout: '1800s'
-
 options:
   logging: CLOUD_LOGGING_ONLY
+  dynamic_substitutions: true
+
+timeout: '1800s'
