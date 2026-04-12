@@ -22,7 +22,7 @@ steps:
       - 'Dockerfile.pipeline'
       - '.'
 
-  # Step 1: Run model processing pipeline using pre-baked image
+  # Step 1: Run model processing pipeline using pre-baked imagee
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
     waitFor: ['build-pipeline-image']
