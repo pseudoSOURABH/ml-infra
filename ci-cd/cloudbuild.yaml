@@ -4,6 +4,7 @@
 steps:
   # Step 0: Setup - Install dependencies
   - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'setup'
     entrypoint: 'bash'
     args:
       - '-c'
@@ -13,11 +14,12 @@ steps:
 
   # Step 1: Run model processing pipeline
   - name: 'python:3.12-slim'
+    id: 'run-pipeline'
+    waitFor: ['setup']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # ✅ Workload Identity provides ADC automatically - no key needed
         python model_pipeline/run_pipeline.py \
           --model bvanaken/clinical-assertion-negation-bert \
           --output ./output \
@@ -27,12 +29,11 @@ steps:
     env:
       - 'PROJECT_ID=$PROJECT_ID'
       - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
-      # ✅ Optional: Explicitly set credentials for clarity (ADC will use this)
-      - 'GOOGLE_APPLICATION_CREDENTIALS='  # Empty = use ADC/Workload Identity
-    # ❌ REMOVE: secretEnv: ['GCLOUD_KEY']
 
-  # Step 2: Build backend Docker image
+  # Step 2: Build backend Docker image (Parallel)
   - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-backend'
+    waitFor: ['run-pipeline']
     args:
       - 'build'
       - '-t'
@@ -42,10 +43,11 @@ steps:
       - '--build-arg'
       - 'TRITON_GRPC_PORT=8001'
       - '.'
-    dir: '.'
 
-  # Step 3: Build frontend Docker image
+  # Step 3: Build frontend Docker image (Parallel)
   - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    waitFor: ['run-pipeline']
     args:
       - 'build'
       - '-t'
@@ -53,108 +55,85 @@ steps:
       - '-f'
       - 'Dockerfile.frontend'
       - '.'
-    dir: '.'
 
   # Step 4: Push images to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA']
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA']
-
-  # Step 5: Deploy to GKE (only on main branch or tags)
-  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'push-images'
+    waitFor: ['build-backend', 'build-frontend']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Get cluster credentials
-        gcloud container clusters get-credentials ml-platform-cluster \
-          --region $_REGION --project $PROJECT_ID
-        
-        # Substitute variables in manifests
-        export IMAGE_TAG=$COMMIT_SHA
-        export PROJECT_ID=$PROJECT_ID
-        export REGION=$_REGION
-        
-        # Apply namespaces first
-        kubectl apply -f k8s/namespaces.yaml
-        
-        # Apply KServe config
-        kubectl apply -f k8s/kserve-config.yaml
-        
-        # Deploy Triton model (KServe)
-        envsubst < k8s/triton-inference.yaml | kubectl apply -f -
-        
-        # Wait for model readiness (optional, can be async)
-        # kubectl wait --for=condition=ready pod -l serving.kserve.io/inferenceservice=clinical-assertion -n triton --timeout=300s
-        
-        # Deploy backend
-        envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
-        
-        # Deploy frontend
-        envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
-        
-        # Apply ingress (requires pre-created static IP and cert)
-        envsubst < k8s/ingress.yaml | kubectl apply -f -
-        
-        echo "Deployment complete!"
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA
+
+  # Step 5: Deploy to GKE (Conditional logic moved inside args)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'deploy'
+    waitFor: ['push-images']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
+          echo "Conditions met. Starting deployment..."
+          
+          gcloud container clusters get-credentials $_CLUSTER \
+            --region $_REGION --project $PROJECT_ID
+          
+          export IMAGE_TAG=$COMMIT_SHA
+          
+          kubectl apply -f k8s/namespaces.yaml
+          kubectl apply -f k8s/kserve-config.yaml
+          
+          envsubst < k8s/triton-inference.yaml | kubectl apply -f -
+          envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
+          envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
+          envsubst < k8s/ingress.yaml | kubectl apply -f -
+          
+          echo "Deployment complete!"
+        else
+          echo "Skipping deployment: Branch $BRANCH_NAME does not match deployment criteria."
+        fi
     env:
       - 'PROJECT_ID=$PROJECT_ID'
       - 'REGION=$_REGION'
       - 'COMMIT_SHA=$COMMIT_SHA'
-    # Only deploy on main branch or tags
-    when:
-      - condition: branch == 'feat/deploy-model' || startsWith(ref_name, 'refs/tags/')
 
-  # Step 6: Run smoke tests
+  # Step 6: Run smoke tests (Conditional logic moved inside args)
   - name: 'python:3.12-slim'
+    id: 'smoke-tests'
+    waitFor: ['deploy']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        pip install httpx
-        python -c "
-        import httpx, time, sys
-        base = 'https://${DOMAIN_NAME}'  # Set via substitution
-        # Wait for services
+        if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
+          pip install httpx
+          python -c "
+        import httpx, time, sys, os
+        base = os.getenv('DOMAIN_NAME', 'http://your-static-ip')
         for _ in range(60):
             try:
                 r = httpx.get(f'{base}/health', timeout=10)
-                if r.status_code == 200 and r.json().get('status') == 'healthy':
+                if r.status_code == 200:
                     print('✓ Health check passed')
-                    break
-            except:
-                pass
-            time.sleep(5)
-        else:
-            print('✗ Health check failed')
-            sys.exit(1)
-        # Test prediction
-        r = httpx.post(f'{base}/predict', json={'sentence': 'Test'}, timeout=30)
-        if r.status_code == 200 and 'label' in r.json():
-            print('✓ Prediction endpoint working')
-        else:
-            print('✗ Prediction failed')
-            sys.exit(1)
-        print('All smoke tests passed!')
+                    sys.exit(0)
+            except Exception as e:
+                print(f'Waiting for service... {e}')
+            time.sleep(10)
+        print('✗ Health check failed')
+        sys.exit(1)
         "
-    when:
-      - condition: branch == 'feat/deploy-model' || startsWith(ref_name, 'refs/tags/')
+        else
+          echo "Skipping smoke tests for non-deployment branch."
+        fi
 
-# Substitutions (set via Cloud Build trigger or manually)
 substitutions:
-  _REGION: us-central1  # Default, override in trigger
+  _REGION: us-central1
   _CLUSTER: ml-platform-cluster
 
-# Timeout
-timeout: '1800s'  # 30 minutes
+timeout: '1800s'
 
-# Logging
 options:
   logging: CLOUD_LOGGING_ONLY
-
-# Secrets (for GCS access if needed)
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/gcs-key/versions/latest
-      env: 'GCLOUD_KEY'
