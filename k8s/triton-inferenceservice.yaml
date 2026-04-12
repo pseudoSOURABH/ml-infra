@@ -1,0 +1,114 @@
+# KServe InferenceService for Triton with CPU optimization
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: clinical-assertion
+  namespace: triton
+  annotations:
+    serving.kserve.io/deploymentMode: "Serverless"  # Use Knative for autoscaling
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 3  # Cost-efficient scaling
+    model:
+      modelFormat:
+        name: triton
+      runtime: triton
+      storageUri: "gs://${PROJECT_ID}-ml-models/clinical_assertion"  # Will be substituted
+      resources:
+        requests:
+          cpu: "1000m"
+          memory: "2Gi"
+        limits:
+          cpu: "2000m"
+          memory: "4Gi"
+      env:
+        # CPU-specific optimizations for ONNX Runtime
+        - name: OMP_NUM_THREADS
+          value: "2"
+        - name: ONNXRUNTIME_EXECUTION_MODE
+          value: "ORT_SEQUENTIAL"
+        - name: ONNXRUNTIME_INTER_OP_PARALLELISM
+          value: "2"
+        - name: ONNXRUNTIME_INTRA_OP_PARALLELISM
+          value: "2"
+    componentSpecs:
+      - spec:
+          containers:
+            - name: kserve-container
+              # Use official Triton image with ONNX Runtime
+              image: docker.io/kserve/tritonserver:23.12-py3
+              command: ["tritonserver"]
+              args:
+                - "--model-repository=/mnt/models"
+                - "--strict-model-config=false"
+                - "--http-port=8080"
+                - "--grpc-port=8001"
+                - "--metrics-port=8002"
+                - "--log-verbose=1"
+                # CPU optimizations
+                - "--backend-config=onnxruntime,cpu-threads=2"
+                - "--backend-config=onnxruntime,inter-op-parallelism=2"
+                - "--backend-config=onnxruntime,intra-op-parallelism=2"
+              resources:
+                requests:
+                  cpu: "1000m"
+                  memory: "2Gi"
+                limits:
+                  cpu: "2000m"
+                  memory: "4Gi"
+              readinessProbe:
+                httpGet:
+                  path: /v2/health/ready
+                  port: 8080
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                httpGet:
+                  path: /v2/health/live
+                  port: 8080
+                initialDelaySeconds: 60
+                periodSeconds: 30
+                timeoutSeconds: 5
+          # Node selector for CPU-optimized pool
+          nodeSelector:
+            cloud.google.com/gke-nodepool: cpu-app-pool
+          # Service account with GCS access via Workload Identity
+          serviceAccountName: triton-sa 
+          # Autoscaling configuration (Knative)
+          metadata:
+            annotations:
+              autoscaling.knative.dev/target: "70"  # Target CPU utilization %
+              autoscaling.knative.dev/window: "30s"
+              autoscaling.knative.dev/panic-window-percentage: "10"
+              autoscaling.knative.dev/panic-threshold-percentage: "200"
+              # Scale to zero after inactivity (cost savings)
+              autoscaling.knative.dev/scale-to-zero-pod-retention-period: "5m"
+
+
+# k8s/triton/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-triton-service
+  namespace: triton
+  labels:
+    app: clinical-triton
+spec:
+  type: ClusterIP  # ✅ Internal only - accessed via gRPC by backend
+  selector:
+    serving.kserve.io/inferenceservice: clinical-assertion
+  ports:
+    - name: grpc
+      port: 8001
+      targetPort: 8001
+      protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 8002
+      targetPort: 8002
+      protocol: TCP

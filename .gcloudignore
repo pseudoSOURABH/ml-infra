@@ -1,0 +1,124 @@
+# .cloudignore
+# ==================== GIT (Cloud Build fetches its own) ====================
+.git/
+.gitignore
+.gitattributes
+
+# ==================== LOCAL DEVELOPMENT ====================
+# IDE configs (not needed for build)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local virtual environments (build uses fresh container)
+venv/
+ENV/
+env/
+.venv/
+
+# Local environment files (use Cloud Build substitutions instead)
+.env
+.env.local
+.env.*.local
+
+# ==================== LARGE ARTIFACTS (Never upload) ====================
+# Model files (pipeline downloads/converts them)
+*.pt
+*.pth
+*.bin
+*.onnx
+*.onnx.data
+*.tflite
+*.pb
+*.pbtxt
+*.mlmodel
+*.mlpackage/
+
+# Model caches
+.huggingface/
+.transformers_cache/
+.cache/
+torch_hub_cache/
+
+# Output directories (generated during build)
+output/
+artifacts/
+exports/
+triton_model_repository/
+
+# ==================== TESTING / DOCS (Not needed for deploy) ====================
+# Test data (large datasets)
+tests/data/large_*
+tests/fixtures/*.pkl
+tests/fixtures/*.parquet
+
+# Documentation builds
+docs/_build/
+site/
+
+# Jupyter notebooks (unless used in pipeline)
+*.ipynb
+!.cloudignore  # Keep this file
+!.gitignore    # Keep gitignore for reference
+
+# ==================== OS / TEMP ====================
+# System files
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
+
+# ==================== DOCKER / K8S (Keep manifests, ignore local overrides) ====================
+# Local Docker overrides
+docker-compose.override.yml
+
+# Local K8s configs (use envsubst in Cloud Build instead)
+*.local.yaml
+*.override.yaml
+
+# ==================== CREDENTIALS (Use Workload Identity / Secret Manager) ====================
+# Never upload keys
+*.pem
+*.key
+*.p12
+service-account*.json
+gcs-credentials.json
+application_default_credentials.json
+
+# ==================== FRONTEND BUILD ARTIFACTS ====================
+# If frontend uses npm/webpack (build happens in Docker)
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+frontend/build/
+
+# ==================== PYTHON CACHE (Redundant in clean build env) ====================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# ==================== WHAT TO KEEP (Explicit includes) ====================
+# Core application code
+!backend/
+!frontend/
+!model_pipeline/
+!k8s/
+!ci-cd/
+
+# Build configuration
+!cloudbuild.yaml
+!Dockerfile.*
+!requirements*.txt
+
+# Kubernetes manifests (substituted at deploy time)
+!k8s/**/*.yaml
+
+# Model pipeline code (executed in Step 1)
+!model_pipeline/*.py
+!model_pipeline/requirements.txt

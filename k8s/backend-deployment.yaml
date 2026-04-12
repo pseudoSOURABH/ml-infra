@@ -1,0 +1,178 @@
+# k8s/backend/deployment.yaml (health check section updated)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clinical-backend
+  namespace: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: clinical-backend
+  template:
+    metadata:
+      labels:
+        app: clinical-backend
+        version: v1
+    spec:
+      serviceAccountName: api-sa
+      containers:
+        - name: backend
+          image: us-central1-docker.pkg.dev/${PROJECT_ID}/ml-repo/clinical-backend:${COMMIT_SHA}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: TRITON_URL
+              value: "clinical-assertion-predictor-default.triton.svc.cluster.local:8001"
+            - name: MODEL_NAME
+              value: "clinical_assertion"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          
+          # ✅ GCE LB uses Kubernetes readinessProbe automatically
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http  # Use named port for clarity
+              scheme: HTTP
+            initialDelaySeconds: 10  # Time for app to start
+            periodSeconds: 5         # Check every 5s
+            timeoutSeconds: 3        # Fail if no response in 3s
+            successThreshold: 1
+            failureThreshold: 3      # Mark unready after 3 failures
+          
+          # ✅ Liveness probe for pod restarts (separate from LB health)
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30  # Longer initial delay
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # ✅ Startup probe for slow-starting containers (GKE 1.18+)
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30     # Allow up to 30*10s = 5min startup
+            periodSeconds: 10
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/appuser/.cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+      
+      # ✅ Target CPU node pool
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-app-pool
+      
+      # ✅ Pod anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - clinical-backend
+                topologyKey: kubernetes.io/hostname
+
+---
+# k8s/backend/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-backend-service
+  namespace: api
+  labels:
+    app: clinical-backend
+  annotations:
+    # ✅ NEG for potential future direct backend exposure (not used now)
+    cloud.google.com/neg: '{"exposed_ports": {"80":{}}}'
+spec:
+  type: ClusterIP  # ✅ Internal only - accessed by frontend via Kubernetes DNS
+  selector:
+    app: clinical-backend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000  # FastAPI port
+      protocol: TCP
+    - name: health
+      port: 8080  # Optional: separate health port if needed
+      targetPort: 8000
+      protocol: TCP
+  # ✅ Session affinity none for stateless API
+  sessionAffinity: None
+
+
+---
+# Horizontal Pod Autoscaler for backend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 min cooldown
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max

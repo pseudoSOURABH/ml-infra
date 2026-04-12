@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: frontend
+  labels:
+    app: frontend
+    tier: web
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Allow 1 extra pod during rollout
+      maxUnavailable: 0  # Zero downtime guarantee
+  selector:
+    matchLabels:
+      app: frontend      # Must match template labels
+  template:
+    metadata:
+      labels:
+        app: frontend    # ✅ MUST MATCH service selector
+        tier: web
+      # ✅ Optional: annotations for monitoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8501"
+    spec:
+      serviceAccountName: api-sa  # ✅ Workload Identity binding
+      containers:
+        - name: frontend
+          image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/ml-repo/frontend:${IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+              name: http          # ✅ Consistent port naming
+              protocol: TCP
+          env:
+            - name: BACKEND_URL
+              value: "http://clinical-backend-service.api.svc.cluster.local:80"
+            - name: REQUEST_TIMEOUT
+              value: "30"
+            # ✅ Optional: Add for debugging
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          
+          # ✅ Readiness: GCE LB uses this to route traffic
+          readinessProbe:
+            httpGet:
+              path: /health       # ✅ Ensure your Streamlit app exposes this
+              port: http          # ✅ Use named port (more maintainable)
+              scheme: HTTP
+            initialDelaySeconds: 10  # ✅ Increased: Streamlit needs startup time
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          
+          # ✅ Liveness: Restarts pod if truly stuck
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30  # ✅ Longer: don't restart during normal startup
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # ✅ Startup: Prevents premature readiness checks during cold start
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30       # Allow up to 5 minutes startup (30*10s)
+            periodSeconds: 10
+          
+          # ✅ Security context (your config - excellent!)
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true  # ✅ Extra hardening
+          
+          # ✅ Writable dirs for Streamlit cache/temp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/appuser/.cache
+              readOnly: false
+      
+      # ✅ Volumes for writable paths (required with readOnlyRootFilesystem)
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+      
+      # ✅ Target your CPU app pool
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-app-pool
+      
+      # ✅ Pod anti-affinity: spread pods across nodes for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - frontend
+                topologyKey: kubernetes.io/hostname
+      
+      # ✅ Image pull secrets if using private registry (optional)
+      # imagePullSecrets:
+      #   - name: gcr-json-key
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-frontend-service
+  namespace: frontend
+  labels:
+    app: frontend              # ✅ FIXED: Match deployment labels
+  annotations:
+    # ✅ NEG: Enables GCE LB to route directly to pods (better than node proxy)
+    cloud.google.com/neg: '{"exposed_ports": {"80":{}}}'
+    # ✅ Optional: BackendConfig for advanced LB features
+    # cloud.google.com/backend-config: '{"default": "frontend-backend-config"}'
+spec:
+  type: ClusterIP              # ✅ Internal only - exposed via Ingress
+  selector:
+    app: frontend              # ✅ FIXED: Must match deployment template labels
+  ports:
+    - name: http
+      port: 80                 # Service port (what Ingress connects to)
+      targetPort: http         # ✅ Use named port (matches container port name)
+      protocol: TCP
+  # ✅ Session affinity: none for stateless frontend
+  sessionAffinity: None
+  # ✅ Optional: IP family for dual-stack (if enabled on cluster)
+  # ipFamilyPolicy: SingleStack
+  # ipFamilies: [IPv4]

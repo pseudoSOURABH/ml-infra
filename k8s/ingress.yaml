@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: frontend
+  annotations:
+    # ✅ REQUIRED: Use GCE HTTP Load Balancer (GCP managed)
+    kubernetes.io/ingress.class: "gce"
+    
+    # ✅ OPTIONAL: Static IP (reserve first: gcloud compute addresses create frontend-ip --global)
+    # kubernetes.io/ingress.global-static-ip-name: "frontend-ip"
+    
+    # ✅ RECOMMENDED: Enable NEG for direct pod routing (better performance)
+    cloud.google.com/neg: '{"ingress": true}'
+    
+    # ✅ OPTIONAL: BackendConfig reference (if using)
+    # cloud.google.com/backend-config: '{"default": "frontend-backend-config"}'
+    
+    # ✅ Health check: GCE LB uses Kubernetes readinessProbe by default
+    # No nginx annotations - pure GCE!
+    
+spec:
+  # ✅ Default backend: routes all traffic to frontend service
+  defaultBackend:
+    service:
+      name: clinical-frontend-service  # ✅ Must match service name
+      port:
+        number: 80                     # ✅ Must match service port
+  # ✅ No TLS section (no SSL yet)
+  # ✅ No host rules (no domain yet) - traffic routed by external IP

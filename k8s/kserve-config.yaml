@@ -1,0 +1,33 @@
+# ConfigMap for KServe runtime defaults (CPU optimization)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferenceservice-config
+  namespace: kserve
+data:
+  triton: |
+    {
+      "image": "nvcr.io/nvidia/tritonserver:23.12-py3",
+      "defaultImage": "nvcr.io/nvidia/tritonserver:23.12-py3",
+      "cpuLimit": "2000m",
+      "cpuRequest": "1000m",
+      "memoryLimit": "4Gi",
+      "memoryRequest": "2Gi",
+      "defaultGrpcPort": 8001,
+      "defaultHttpPort": 8080,
+      "defaultMetricsPort": 8002
+    }
+  storageInitializer: |
+    {
+      "image": "gcr.io/kubeflow-models/storage-initializer:v0.11.0",
+      "memoryRequest": "100Mi",
+      "memoryLimit": "1Gi",
+      "cpuRequest": "100m",
+      "cpuLimit": "1",
+      "enableDirectPvcVolumeMount": true,
+      "storageConfig": {
+        "gcs": {
+          "gcsCredentialFileName": ""
+        }
+      }
+    }

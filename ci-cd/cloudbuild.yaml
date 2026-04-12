@@ -1,0 +1,160 @@
+# Cloud Build pipeline for ML inference platform
+# Triggered on: feature branch commits, tags (auto-deploy)
+
+steps:
+  # Step 0: Setup - Install dependencies
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud components install kubectl gke-gcloud-auth-plugin --quiet
+        pip install -r model_pipeline/requirements.txt
+
+  # Step 1: Run model processing pipeline
+  - name: 'python:3.12-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # ✅ Workload Identity provides ADC automatically - no key needed
+        python model_pipeline/run_pipeline.py \
+          --model bvanaken/clinical-assertion-negation-bert \
+          --output ./output \
+          --gcs-uri gs://$PROJECT_ID-ml-models/clinical_assertion \
+          --project-id $PROJECT_ID \
+          --threshold 0.95
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+      # ✅ Optional: Explicitly set credentials for clarity (ADC will use this)
+      - 'GOOGLE_APPLICATION_CREDENTIALS='  # Empty = use ADC/Workload Identity
+    # ❌ REMOVE: secretEnv: ['GCLOUD_KEY']
+
+  # Step 2: Build backend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA'
+      - '-f'
+      - 'Dockerfile.backend'
+      - '--build-arg'
+      - 'TRITON_GRPC_PORT=8001'
+      - '.'
+    dir: '.'
+
+  # Step 3: Build frontend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA'
+      - '-f'
+      - 'Dockerfile.frontend'
+      - '.'
+    dir: '.'
+
+  # Step 4: Push images to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA']
+
+  # Step 5: Deploy to GKE (only on main branch or tags)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Get cluster credentials
+        gcloud container clusters get-credentials ml-platform-cluster \
+          --region $_REGION --project $PROJECT_ID
+        
+        # Substitute variables in manifests
+        export IMAGE_TAG=$COMMIT_SHA
+        export PROJECT_ID=$PROJECT_ID
+        export REGION=$_REGION
+        
+        # Apply namespaces first
+        kubectl apply -f k8s/namespaces.yaml
+        
+        # Apply KServe config
+        kubectl apply -f k8s/kserve-config.yaml
+        
+        # Deploy Triton model (KServe)
+        envsubst < k8s/triton-inference.yaml | kubectl apply -f -
+        
+        # Wait for model readiness (optional, can be async)
+        # kubectl wait --for=condition=ready pod -l serving.kserve.io/inferenceservice=clinical-assertion -n triton --timeout=300s
+        
+        # Deploy backend
+        envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
+        
+        # Deploy frontend
+        envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
+        
+        # Apply ingress (requires pre-created static IP and cert)
+        envsubst < k8s/ingress.yaml | kubectl apply -f -
+        
+        echo "Deployment complete!"
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'REGION=$_REGION'
+      - 'COMMIT_SHA=$COMMIT_SHA'
+    # Only deploy on main branch or tags
+    when:
+      - condition: branch == 'feat/deploy-model' || startsWith(ref_name, 'refs/tags/')
+
+  # Step 6: Run smoke tests
+  - name: 'python:3.12-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install httpx
+        python -c "
+        import httpx, time, sys
+        base = 'https://${DOMAIN_NAME}'  # Set via substitution
+        # Wait for services
+        for _ in range(60):
+            try:
+                r = httpx.get(f'{base}/health', timeout=10)
+                if r.status_code == 200 and r.json().get('status') == 'healthy':
+                    print('✓ Health check passed')
+                    break
+            except:
+                pass
+            time.sleep(5)
+        else:
+            print('✗ Health check failed')
+            sys.exit(1)
+        # Test prediction
+        r = httpx.post(f'{base}/predict', json={'sentence': 'Test'}, timeout=30)
+        if r.status_code == 200 and 'label' in r.json():
+            print('✓ Prediction endpoint working')
+        else:
+            print('✗ Prediction failed')
+            sys.exit(1)
+        print('All smoke tests passed!')
+        "
+    when:
+      - condition: branch == 'feat/deploy-model' || startsWith(ref_name, 'refs/tags/')
+
+# Substitutions (set via Cloud Build trigger or manually)
+substitutions:
+  _REGION: us-central1  # Default, override in trigger
+  _CLUSTER: ml-platform-cluster
+
+# Timeout
+timeout: '1800s'  # 30 minutes
+
+# Logging
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Secrets (for GCS access if needed)
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/gcs-key/versions/latest
+      env: 'GCLOUD_KEY'

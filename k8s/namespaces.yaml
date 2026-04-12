@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: triton
+  labels:
+    kserve.io/inference: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: api
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend
