@@ -133,24 +133,23 @@ steps:
         apt-get update -qq && apt-get install -y -qq gettext-base
 
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-          echo "Deploying commit $COMMIT_SHA to cluster $_CLUSTER..."
+          echo "Deploying commit $COMMIT_SHA to cluster ${_CLUSTER}..."
 
-          gcloud container clusters get-credentials $_CLUSTER \
-            --region $_REGION --project $PROJECT_ID
+          gcloud container clusters get-credentials ${_CLUSTER} \
+            --region ${_REGION} --project $PROJECT_ID
 
-          # Internal script variables for envsubst
+          # Set variables for envsubst
           export IMAGE_TAG=$COMMIT_SHA
           export PROJECT_ID=$PROJECT_ID
-          export REGION=$_REGION
+          export REGION=${_REGION}
           export MODEL_GCS_URI="gs://${PROJECT_ID}-ml-models/clinical_assertion"
 
           kubectl apply -f k8s/namespaces.yaml
 
-          # Triton
+          # Explicitly pass vars to envsubst to avoid stripping other $ signs in manifests
           envsubst '${PROJECT_ID} ${MODEL_GCS_URI}' \
             < k8s/triton-inference.yaml | kubectl apply -f -
 
-          # Backend and frontend
           envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
             < k8s/backend-deployment.yaml | kubectl apply -f -
 
@@ -164,11 +163,11 @@ steps:
           echo "Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
-      
       - 'PROJECT_ID=$PROJECT_ID'
       - 'COMMIT_SHA=$COMMIT_SHA'
       - '_CLUSTER=${_CLUSTER}'
       - '_REGION=${_REGION}'
+      - 'USE_GKE_GCLOUD_AUTH_PLUGIN=True'
 
   # ── Smoke tests ────────────────────────────────────────────────────────────
   - name: 'python:3.12-slim'
@@ -199,10 +198,13 @@ steps:
 substitutions:
   _REGION: us-central1
   _CLUSTER: ml-platform-cluster
+  # Declare these to allow Trigger/CLI overrides without failing the build
   _MODEL_GCS_URI: ""
+  _IMAGE_TAG: ""
 
 options:
   logging: CLOUD_LOGGING_ONLY
   dynamic_substitutions: true
+  machineType: 'E2_HIGHCPU_8'  # Prevents OOM during model quantization
 
-timeout: '1800s'
+timeout: '3000s'
