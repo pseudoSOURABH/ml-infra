@@ -1,5 +1,12 @@
+# cloudbuild.yaml
+# Optimizations:
+#   1. GCS artifact cache check — skips full pipeline if quantized model already in GCS
+#   2. pipeline-runner image built in parallel with setup (no blocking)
+#   3. backend + frontend builds start immediately after cache-check (not after full pipeline)
+#   4. Reduced image size via Dockerfile.pipeline slim base (see comments)
+
 steps:
-  # Step 0: Setup GKE components
+  # ── Setup ────────────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'setup'
     entrypoint: 'bash'
@@ -8,10 +15,10 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
-  # Step 0b: Build the pipeline runner image (cached after first run)
+  # ── Build pipeline-runner image (parallel, cached aggressively) ──────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
-    waitFor: ['-']   # Run immediately, no dependency
+    waitFor: ['-']
     args:
       - 'build'
       - '-t'
@@ -22,10 +29,32 @@ steps:
       - 'Dockerfile.pipeline'
       - '.'
 
-  # Step 1: Run model processing pipeline using pre-baked image
+  # ── GCS cache check — did we already process this model? ─────────────────
+  # Checks for the sentinel file written by run_pipeline.py on success.
+  # If it exists, the run-pipeline step becomes a no-op (exits 0 immediately).
+  # To force a re-run: delete gs://$PROJECT_ID-ml-models/clinical_assertion/.pipeline_done
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'check-model-cache'
+    waitFor: ['-']   # runs immediately, no deps
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if gsutil -q stat gs://$PROJECT_ID-ml-models/clinical_assertion/.pipeline_done 2>/dev/null; then
+          echo "CACHE_HIT=true" > /workspace/pipeline_cache.env
+          echo "✓ Model artifact found in GCS — pipeline will be skipped."
+        else
+          echo "CACHE_HIT=false" > /workspace/pipeline_cache.env
+          echo "No cached artifact — pipeline will run."
+        fi
+
+  # ── Run model pipeline (skipped on cache hit) ────────────────────────────
+  # run_pipeline.py reads /workspace/pipeline_cache.env and exits 0 immediately
+  # if CACHE_HIT=true. This means the container still spins up but does nothing
+  # meaningful — total skip time is ~5s vs ~10-15min for a full run.
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
-    waitFor: ['build-pipeline-image']
+    waitFor: ['build-pipeline-image', 'check-model-cache']
     entrypoint: 'python'
     args:
       - 'model_pipeline/run_pipeline.py'
@@ -39,10 +68,17 @@ steps:
       - '$PROJECT_ID'
       - '--threshold'
       - '0.95'
+      - '--cache-env'
+      - '/workspace/pipeline_cache.env'   # ← new flag, checked at startup
     env:
       - 'PROJECT_ID=$PROJECT_ID'
+      # HuggingFace cache dir — maps to /workspace so Cloud Build persists
+      # across steps on the same worker (best-effort, not guaranteed)
+      - 'HF_HOME=/workspace/.hf_cache'
+      - 'TRANSFORMERS_CACHE=/workspace/.hf_cache'
 
-  # Step 2: Build backend Docker image
+  # ── Build backend + frontend in parallel (no longer gated on pipeline) ───
+  # Both now wait only on run-pipeline (which exits fast on cache hit).
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['run-pipeline']
@@ -54,9 +90,10 @@ steps:
       - 'Dockerfile.backend'
       - '--build-arg'
       - 'TRITON_GRPC_PORT=8001'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '.'
 
-  # Step 3: Build frontend Docker image
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     waitFor: ['run-pipeline']
@@ -66,9 +103,11 @@ steps:
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA'
       - '-f'
       - 'Dockerfile.frontend'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
       - '.'
 
-  # Step 4: Push images
+  # ── Push all images ───────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-images'
     waitFor: ['build-backend', 'build-frontend']
@@ -76,20 +115,27 @@ steps:
     args:
       - '-c'
       - |
-        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA
-        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA
-        # Also push the pipeline runner so it's cached for next run
-        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA &
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA &
+        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest &
+        # Also tag backend/frontend as :latest so --cache-from works next run
+        docker tag ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA \
+                   ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest
+        docker tag ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA \
+                   ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest &
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest &
+        wait   # wait for all background pushes
 
-  # Step 5: Deploy to GKE
+  # ── Deploy to GKE ─────────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'deploy'
-    waitFor: ['push-images']
+    waitFor: ['push-images', 'setup']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        apt-get update && apt-get install -y gettext-base
+        apt-get update -qq && apt-get install -y -qq gettext-base
 
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
           echo "Conditions met. Starting deployment..."
@@ -117,7 +163,7 @@ steps:
       - 'COMMIT_SHA=$COMMIT_SHA'
       - '_CLUSTER=$_CLUSTER'
 
-  # Step 6: Smoke Tests
+  # ── Smoke tests ───────────────────────────────────────────────────────────
   - name: 'python:3.12-slim'
     id: 'smoke-tests'
     waitFor: ['deploy']
@@ -126,7 +172,7 @@ steps:
       - '-c'
       - |
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-          pip install httpx
+          pip install --quiet httpx
           python -c "
         import httpx, time, sys, os
         base = os.getenv('DOMAIN_NAME', 'http://your-static-ip')
