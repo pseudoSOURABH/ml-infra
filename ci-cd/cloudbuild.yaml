@@ -1,6 +1,5 @@
-# Cloud Build pipeline for ML inference platform
 steps:
-  # Step 0: Setup - Install GKE components
+  # Step 0: Setup GKE components
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'setup'
     entrypoint: 'bash'
@@ -9,21 +8,37 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
-  # Step 1: Run model processing pipeline
-  - name: 'python:3.12-slim'
-    id: 'run-pipeline'
-    waitFor: ['setup']
-    entrypoint: 'bash'
+  # Step 0b: Build the pipeline runner image (cached after first run)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-pipeline-image'
+    waitFor: ['-']   # Run immediately, no dependency
     args:
-      - '-c'
-      - |
-        pip install --no-cache-dir -r model_pipeline/requirements.txt
-        python model_pipeline/run_pipeline.py \
-          --model bvanaken/clinical-assertion-negation-bert \
-          --output ./output \
-          --gcs-uri gs://$PROJECT_ID-ml-models/clinical_assertion \
-          --project-id $PROJECT_ID \
-          --threshold 0.95
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+      - '--cache-from'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+      - '-f'
+      - 'Dockerfile.pipeline'
+      - '.'
+
+  # Step 1: Run model processing pipeline using pre-baked image
+  - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+    id: 'run-pipeline'
+    waitFor: ['build-pipeline-image']
+    entrypoint: 'python'
+    args:
+      - 'model_pipeline/run_pipeline.py'
+      - '--model'
+      - 'bvanaken/clinical-assertion-negation-bert'
+      - '--output'
+      - './output'
+      - '--gcs-uri'
+      - 'gs://$PROJECT_ID-ml-models/clinical_assertion'
+      - '--project-id'
+      - '$PROJECT_ID'
+      - '--threshold'
+      - '0.95'
     env:
       - 'PROJECT_ID=$PROJECT_ID'
 
@@ -63,6 +78,8 @@ steps:
       - |
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA
+        # Also push the pipeline runner so it's cached for next run
+        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest
 
   # Step 5: Deploy to GKE
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -72,25 +89,24 @@ steps:
     args:
       - '-c'
       - |
-        # Install envsubst which is missing in the default gcloud image
         apt-get update && apt-get install -y gettext-base
 
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
           echo "Conditions met. Starting deployment..."
-          
+
           gcloud container clusters get-credentials $_CLUSTER \
             --region $_REGION --project $PROJECT_ID
-          
+
           export IMAGE_TAG=$COMMIT_SHA
-          
+
           kubectl apply -f k8s/namespaces.yaml
           kubectl apply -f k8s/kserve-config.yaml
-          
+
           envsubst < k8s/triton-inference.yaml | kubectl apply -f -
           envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
           envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
           envsubst < k8s/ingress.yaml | kubectl apply -f -
-          
+
           echo "Deployment complete!"
         else
           echo "Skipping deployment for branch: $BRANCH_NAME"
