@@ -142,23 +142,21 @@ steps:
           gcloud container clusters get-credentials ${_CLUSTER} \
             --region ${_REGION} --project $PROJECT_ID
 
-          # All vars used by envsubst across manifests — defined exactly once here.
-          # k8s manifests use: ${IMAGE_TAG}, ${PROJECT_ID}, ${REGION}, ${MODEL_GCS_URI}
+          # Set environment variables for envsubst
           export IMAGE_TAG="$COMMIT_SHA"
           export REGION="${_REGION}"
-          # MODEL_GCS_URI: same bucket path written by run-pipeline in this build
           export MODEL_GCS_URI="gs://$PROJECT_ID-ml-models/clinical_assertion"
 
           kubectl apply -f k8s/namespaces.yaml
 
-          # envsubst with explicit var list — prevents clobbering unrelated ${} in YAML
-          envsubst '${MODEL_GCS_URI}' \
+          # ✅ ESCAPED: $$ becomes literal $ after Cloud Build substitution
+          envsubst '$${MODEL_GCS_URI}' \
             < k8s/triton-inference.yaml | kubectl apply -f -
 
-          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
+          envsubst '$${IMAGE_TAG} $${PROJECT_ID} $${REGION}' \
             < k8s/backend-deployment.yaml | kubectl apply -f -
 
-          envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
+          envsubst '$${IMAGE_TAG} $${PROJECT_ID} $${REGION}' \
             < k8s/frontend-deployment.yaml | kubectl apply -f -
 
           kubectl apply -f k8s/ingress.yaml
