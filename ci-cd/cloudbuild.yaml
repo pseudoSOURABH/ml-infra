@@ -11,7 +11,7 @@ steps:
   # Step 0b: Build the pipeline runner image (cached after first runn)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
-    waitFor: ['-']   # Run immediately, no dependency
+    waitFor: ['-']   # Run immediately, no dependencyy
     args:
       - 'build'
       - '-t'
