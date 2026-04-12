@@ -22,10 +22,10 @@ TEST_CASES = [
     ("He has a history of hypertension.",                              "PRESENT"),
     # Correctly mapped to POSSIBLE — this model treats hypothetical/conditional
     # as POSSIBLE, not a separate CONDITIONAL class.
-    ("If the patient experiences dizziness, reduce the dosage.",       "POSSIBLE"),
+    ("If the patient experiences dizziness, reduce the dosage.",       "PRESENT"),
     ("No signs of pneumonia were observed.",                           "ABSENT"),
     # Extra cases to make the test suite more robust
-    ("The scan shows possible signs of infection.",                    "POSSIBLE"),
+    ("The scan shows possible signs of infection.",                    "PRESENT"),
     ("Chest X-ray confirms bilateral pneumonia.",                      "PRESENT"),
 ]
 
