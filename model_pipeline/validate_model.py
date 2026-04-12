@@ -10,15 +10,24 @@ from optimum.onnxruntime import ORTModelForSequenceClassification
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TEST_CASES = [
-    ("The patient denies chest pain.", "ABSENT"),
-    ("He has a history of hypertension.", "PRESENT"),
-    ("If the patient experiences dizziness, reduce the dosage.", "CONDITIONAL"),
-    ("No signs of pneumonia were observed.", "ABSENT"),
-]
-
-# bvanaken/clinical-assertion-negation-bert label mapping
+# bvanaken/clinical-assertion-negation-bert label space:
+# 0=PRESENT, 1=ABSENT, 2=POSSIBLE
+# This model does NOT have a CONDITIONAL label — conditional/hypothetical
+# sentences are classified as POSSIBLE by this model's design.
 LABEL_MAP = {0: "PRESENT", 1: "ABSENT", 2: "POSSIBLE"}
+
+TEST_CASES = [
+    # (sentence, expected_label)
+    ("The patient denies chest pain.",                                  "ABSENT"),
+    ("He has a history of hypertension.",                              "PRESENT"),
+    # Correctly mapped to POSSIBLE — this model treats hypothetical/conditional
+    # as POSSIBLE, not a separate CONDITIONAL class.
+    ("If the patient experiences dizziness, reduce the dosage.",       "POSSIBLE"),
+    ("No signs of pneumonia were observed.",                           "ABSENT"),
+    # Extra cases to make the test suite more robust
+    ("The scan shows possible signs of infection.",                    "POSSIBLE"),
+    ("Chest X-ray confirms bilateral pneumonia.",                      "PRESENT"),
+]
 
 
 def evaluate_model(
@@ -26,17 +35,6 @@ def evaluate_model(
     tokenizer_path: str,
     accuracy_threshold: float = 0.95,
 ) -> bool:
-    """
-    Run test cases against the ONNX model and check accuracy threshold.
-
-    Args:
-        model_path: Path to model.onnx
-        tokenizer_path: Directory containing tokenizer files
-        accuracy_threshold: Float 0-1, minimum pass accuracy
-
-    Returns:
-        True if accuracy >= threshold
-    """
     model_path = Path(model_path)
     tokenizer_path = Path(tokenizer_path)
 
@@ -65,18 +63,13 @@ def evaluate_model(
             pred_idx = int(np.argmax(logits, axis=1)[0])
             pred_label = LABEL_MAP.get(pred_idx, "UNKNOWN")
 
-            # Numerically stable softmax for confidence
             shifted = logits - np.max(logits)
             probs = np.exp(shifted) / np.exp(shifted).sum(axis=1, keepdims=True)
             score = float(np.max(probs))
 
-            # CONDITIONAL maps to POSSIBLE in this model's label set
-            is_correct = (pred_label == expected) or (
-                expected == "CONDITIONAL" and pred_label == "POSSIBLE"
-            )
+            is_correct = pred_label == expected
             if is_correct:
                 correct += 1
-                pred_label = expected  # normalise for display
 
             results.append((sentence[:55], expected, pred_label, score, is_correct))
 
@@ -89,7 +82,10 @@ def evaluate_model(
     logger.info("=== Validation Results ===")
     for sent, exp, pred, score, ok in results:
         mark = "✓" if ok else "✗"
-        logger.info(f"  {mark} expected={exp:11s} predicted={pred:11s} score={score:.3f}  {sent}")
+        logger.info(
+            f"  {mark} expected={exp:8s} predicted={pred:8s} "
+            f"score={score:.3f}  {sent}"
+        )
 
     logger.info(f"Accuracy: {accuracy:.0%} (threshold: {accuracy_threshold:.0%})")
 
@@ -104,7 +100,7 @@ def evaluate_model(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model",     required=True)
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--threshold", type=float, default=0.95)
     args = parser.parse_args()
