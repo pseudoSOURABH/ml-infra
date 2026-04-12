@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-ddef upload_to_gcs(local_path: str, gcs_uri: str, project_id: str):
+def upload_to_gcs(local_path: str, gcs_uri: str, project_id: str):
     """Upload model artifacts to GCS."""
     if not gcs_uri.startswith("gs://"):
         logger.warning(f"Not a GCS URI: {gcs_uri}, skipping upload")
