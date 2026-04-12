@@ -164,6 +164,7 @@ steps:
           echo "Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
+      
       - 'PROJECT_ID=$PROJECT_ID'
       - 'COMMIT_SHA=$COMMIT_SHA'
       - '_CLUSTER=${_CLUSTER}'
@@ -198,6 +199,7 @@ steps:
 substitutions:
   _REGION: us-central1
   _CLUSTER: ml-platform-cluster
+  _MODEL_GCS_URI: ""
 
 options:
   logging: CLOUD_LOGGING_ONLY
