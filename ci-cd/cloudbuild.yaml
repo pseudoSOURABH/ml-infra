@@ -8,7 +8,7 @@ steps:
       - |
         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
 
-  # ── Build pipeline-runner image ──────────────────────────────────────────
+  # ── Build pipeline-runner ──────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
     waitFor: ['-']
@@ -24,7 +24,7 @@ steps:
       - 'Dockerfile.pipeline'
       - '.'
 
-  # Push pipeline-runner so the tag exists before the next step runs it
+  # Push immediately — must exist before run-pipeline references it by name
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-pipeline-image'
     waitFor: ['build-pipeline-image']
@@ -45,14 +45,18 @@ steps:
       - |
         if gsutil -q stat gs://$PROJECT_ID-ml-models/clinical_assertion/.pipeline_done 2>/dev/null; then
           echo "CACHE_HIT=true" > /workspace/pipeline_cache.env
-          echo "✓ Model artifact found in GCS — pipeline will be skipped."
+          echo "✓ Model artifact found in GCS — skipping pipeline."
         else
           echo "CACHE_HIT=false" > /workspace/pipeline_cache.env
-          echo "No cached artifact — pipeline will run."
+          echo "Cache miss — pipeline will run."
         fi
 
   # ── Run model pipeline ─────────────────────────────────────────────────────
-  - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:$COMMIT_SHA'
+  # IMPORTANT: Cloud Build does NOT substitute variables in the `name` field.
+  # Solution: use a fixed :latest tag for the runner name, but the actual
+  # image was just pushed above with both :latest AND :$COMMIT_SHA tags,
+  # so :latest == this commit's image at this point in the build.
+  - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
     waitFor: ['push-pipeline-image', 'check-model-cache']
     entrypoint: 'python'
@@ -133,21 +137,22 @@ steps:
         apt-get update -qq && apt-get install -y -qq gettext-base
 
         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-          echo "Deploying commit $COMMIT_SHA to cluster ${_CLUSTER}..."
+          echo "Deploying commit $COMMIT_SHA..."
 
           gcloud container clusters get-credentials ${_CLUSTER} \
             --region ${_REGION} --project $PROJECT_ID
 
-          # Set variables for envsubst
-          export IMAGE_TAG=$COMMIT_SHA
-          export PROJECT_ID=$PROJECT_ID
-          export REGION=${_REGION}
-          export MODEL_GCS_URI="gs://${PROJECT_ID}-ml-models/clinical_assertion"
+          # All vars used by envsubst across manifests — defined exactly once here.
+          # k8s manifests use: ${IMAGE_TAG}, ${PROJECT_ID}, ${REGION}, ${MODEL_GCS_URI}
+          export IMAGE_TAG="$COMMIT_SHA"
+          export REGION="${_REGION}"
+          # MODEL_GCS_URI: same bucket path written by run-pipeline in this build
+          export MODEL_GCS_URI="gs://$PROJECT_ID-ml-models/clinical_assertion"
 
           kubectl apply -f k8s/namespaces.yaml
 
-          # Explicitly pass vars to envsubst to avoid stripping other $ signs in manifests
-          envsubst '${PROJECT_ID} ${MODEL_GCS_URI}' \
+          # envsubst with explicit var list — prevents clobbering unrelated ${} in YAML
+          envsubst '${MODEL_GCS_URI}' \
             < k8s/triton-inference.yaml | kubectl apply -f -
 
           envsubst '${IMAGE_TAG} ${PROJECT_ID} ${REGION}' \
@@ -158,15 +163,11 @@ steps:
 
           kubectl apply -f k8s/ingress.yaml
 
-          echo "✓ Deployment complete — image tag: $COMMIT_SHA"
+          echo "✓ Deployment complete — image: $COMMIT_SHA  model: $MODEL_GCS_URI"
         else
           echo "Skipping deployment for branch: $BRANCH_NAME"
         fi
     env:
-      - 'PROJECT_ID=$PROJECT_ID'
-      - 'COMMIT_SHA=$COMMIT_SHA'
-      - '_CLUSTER=${_CLUSTER}'
-      - '_REGION=${_REGION}'
       - 'USE_GKE_GCLOUD_AUTH_PLUGIN=True'
 
   # ── Smoke tests ────────────────────────────────────────────────────────────
@@ -195,16 +196,16 @@ steps:
         sys.exit(1)"
         fi
 
+# Only user-defined substitutions here (_PREFIX required).
+# Built-ins like $PROJECT_ID, $COMMIT_SHA, $BRANCH_NAME, $TAG_NAME
+# are provided automatically by Cloud Build — never declare them here.
 substitutions:
   _REGION: us-central1
   _CLUSTER: ml-platform-cluster
-  # Declare these to allow Trigger/CLI overrides without failing the build
-  _MODEL_GCS_URI: ""
-  _IMAGE_TAG: ""
 
 options:
   logging: CLOUD_LOGGING_ONLY
   dynamic_substitutions: true
-  machineType: 'E2_HIGHCPU_8'  # Prevents OOM during model quantization
+  machineType: 'E2_HIGHCPU_8'
 
 timeout: '3000s'
