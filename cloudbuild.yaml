@@ -1,6 +1,6 @@
 steps:
   - name: 'bash'
-    args: ['echo', 'Hello from GitHub! Your Cloud Build Trigger is working.']
+    args: ['echo', 'Helloo from GitHub! Your Cloud Build Trigger is working.']
 
 options:
   logging: CLOUD_LOGGING_ONLY
