@@ -1,5 +1,5 @@
 steps:
-  # ── 0: Pull pipeline runner cache explicitly (fast, enables cache hits) ──
+  # ── 0: Pull pipeline runner cache ────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'pull-pipeline-cache'
     waitFor: ['-']
@@ -8,9 +8,9 @@ steps:
       - '-c'
       - |
         docker pull us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
-          || true   # Don't fail if image doesn't exist yet (first run)
+          || true
 
-  # ── 1: Pull backend/frontend cache in parallel with abovee ────────────────
+  # ── 1: Pull backend/frontend cache in parallel ───────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'pull-app-cache'
     waitFor: ['-']
@@ -22,10 +22,15 @@ steps:
         docker pull ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest || true &
         wait
 
-  # ── 2: Build pipeline runner (only rebuilds if Dockerfile.pipeline changed)
+  # ── 2: Build pipeline runner image ───────────────────────────────────────
+  # dir: '.' sets cwd to /workspace (repo root ml-infra/ml-infra/) so:
+  #   -f Dockerfile.pipeline  → /workspace/Dockerfile.pipeline  ✓
+  #   .  (build context)      → /workspace/ which contains model_pipeline/
+  #                             and model_repository/  ✓
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
     waitFor: ['pull-pipeline-cache']
+    dir: '.'
     args:
       - 'build'
       - '-t'
@@ -36,18 +41,21 @@ steps:
       - 'Dockerfile.pipeline'
       - '.'
 
-  # ── 3: Run model pipeline — output lands in /workspace/output ────────────
-  #       /workspace is automatically shared across all Cloud Build steps
+  # ── 3: Run model pipeline ─────────────────────────────────────────────────
+  # Cloud Build mounts /workspace into the container automatically.
+  # The image has model weights at /app/hf_cache (baked at build time).
+  # run_pipeline.py lives at /app/model_pipeline/ inside the image.
+  # WORKDIR in Dockerfile.pipeline is /workspace so relative imports work.
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
     waitFor: ['build-pipeline-image']
     entrypoint: 'python'
     args:
-      - 'model_pipeline/run_pipeline.py'
+      - '/app/model_pipeline/run_pipeline.py'
       - '--model'
       - 'bvanaken/clinical-assertion-negation-bert'
       - '--output'
-      - '/workspace/output'        # FIX: explicit /workspace path, not ./output
+      - '/workspace/output'
       - '--gcs-uri'
       - 'gs://$PROJECT_ID-ml-models/clinical_assertion'
       - '--project-id'
@@ -56,17 +64,21 @@ steps:
       - '0.95'
     env:
       - 'PROJECT_ID=$PROJECT_ID'
+      - 'HF_HOME=/app/hf_cache'
+      - 'TRANSFORMERS_OFFLINE=1'
+      - 'HF_HUB_OFFLINE=1'
 
-  # ── 4a: Build backend (after pipeline, parallel with frontend) ────────────
+  # ── 4a: Build backend (parallel with frontend, no pipeline dependency) ────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
-    waitFor: ['run-pipeline', 'pull-app-cache']
+    waitFor: ['pull-app-cache']
+    dir: '.'
     args:
       - 'build'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'  # tag latest for next cache pull
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '--cache-from'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '-f'
@@ -78,7 +90,8 @@ steps:
   # ── 4b: Build frontend (parallel with backend) ───────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
-    waitFor: ['run-pipeline', 'pull-app-cache']
+    waitFor: ['pull-app-cache']
+    dir: '.'
     args:
       - 'build'
       - '-t'
@@ -94,41 +107,41 @@ steps:
   # ── 5: Push all images in parallel ───────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-images'
-    waitFor: ['build-backend', 'build-frontend']
+    waitFor: ['build-backend', 'build-frontend', 'run-pipeline']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Push all four tags in parallel
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest &
         docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest &
-        wait   # Block until all pushes complete
+        wait
 
-  # ── 6: Deploy to GKE (only on deploy branch or tag) ──────────────────────
-  #       kubectl + gke-gcloud-auth-plugin pulled from a slim helper image
-  #       instead of installing via gcloud components (saves ~2 min)
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+  # ── 6: Deploy to GKE ─────────────────────────────────────────────────────
+  # Uses the full cloud-sdk image (NOT :slim).
+  # :slim strips kubectl + gke-gcloud-auth-plugin and blocks gcloud components install.
+  # The full image has both pre-installed — no extra install step needed.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy'
     waitFor: ['push-images']
+    dir: '.'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
           echo "Skipping deployment for branch: $BRANCH_NAME"
           exit 0
         fi
 
-        # Install only what's needed — gettext for envsubst, kubectl plugin
         apt-get update -qq && apt-get install -y -qq gettext-base
-        gcloud components install gke-gcloud-auth-plugin kubectl --quiet
 
-        echo "Starting deployment..."
+        # --zone not --region: your cluster is ZONAL (us-central1-a), not regional.
+        # Confirm with: gcloud container clusters list
         gcloud container clusters get-credentials $_CLUSTER \
-          --region $_REGION --project $PROJECT_ID
+          --zone $_CLUSTER_ZONE --project $PROJECT_ID
 
         export IMAGE_TAG=$COMMIT_SHA
         export PROJECT_ID=$PROJECT_ID
@@ -136,14 +149,11 @@ steps:
 
         kubectl apply -f k8s/namespaces.yaml
         kubectl apply -f k8s/kserve-config.yaml
-
-        # Apply manifests — envsubst handles variable replacement
-        envsubst < k8s/triton-inference.yaml  | kubectl apply -f -
+        envsubst < k8s/triton-inference.yaml    | kubectl apply -f -
         envsubst < k8s/backend-deployment.yaml  | kubectl apply -f -
         envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
-        envsubst < k8s/ingress.yaml            | kubectl apply -f -
+        envsubst < k8s/ingress.yaml             | kubectl apply -f -
 
-        # Wait for rollouts to confirm healthy before smoke test
         kubectl rollout status deployment/clinical-backend -n api --timeout=300s
         kubectl rollout status deployment/frontend -n frontend --timeout=300s
 
@@ -154,9 +164,10 @@ steps:
       - 'TAG_NAME=$TAG_NAME'
       - 'COMMIT_SHA=$COMMIT_SHA'
       - '_CLUSTER=$_CLUSTER'
+      - '_CLUSTER_ZONE=$_CLUSTER_ZONE'
       - '_REGION=$_REGION'
 
-  # ── 7: Smoke test — only runs on deploy branch/tag ───────────────────────
+  # ── 7: Smoke tests ────────────────────────────────────────────────────────
   - name: 'python:3.12-slim'
     id: 'smoke-tests'
     waitFor: ['deploy']
@@ -164,8 +175,7 @@ steps:
     args:
       - '-c'
       - |
-        # Exit early on non-deploy branches — don't waste time installing httpx
-        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
           echo "Skipping smoke tests for branch: $BRANCH_NAME"
           exit 0
         fi
@@ -174,7 +184,12 @@ steps:
         python - <<'EOF'
         import httpx, time, sys, os
 
-        base = os.environ["DOMAIN_NAME"]   # FIX: fail loudly if not set vs silently using wrong IP
+        base = os.environ["DOMAIN_NAME"]
+        if not base or "your-actual-static-ip" in base:
+            print("ERROR: _DOMAIN_NAME is still a placeholder.")
+            print("Pass the real IP: gcloud builds submit --substitutions=_DOMAIN_NAME=http://<ip>")
+            sys.exit(1)
+
         print(f"Running smoke test against {base}")
 
         for attempt in range(30):
@@ -198,195 +213,21 @@ steps:
 
 substitutions:
   _REGION: us-central1
+
+  # ── Cluster config ────────────────────────────────────────────────────────
+  # Your cluster is ZONAL (us-central1-a), not regional.
+  # Confirm zone with: gcloud container clusters list
   _CLUSTER: ml-platform-cluster
-  _DOMAIN_NAME: 'http://your-static-ip'   # override per environment
+  _CLUSTER_ZONE: us-central1-a
+
+  # ── Smoke test target ─────────────────────────────────────────────────────
+  # Replace with your real static IP before deploying.
+  # Find it with: gcloud compute addresses list
+  _DOMAIN_NAME: 'http://your-actual-static-ip'
 
 options:
   logging: CLOUD_LOGGING_ONLY
   dynamic_substitutions: true
-  # Use a higher-CPU machine for faster Docker builds
   machineType: 'E2_HIGHCPU_8'
 
-timeout: '1800s'
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# steps:
-#   # Step 0: Setup GKE components
-#   - name: 'gcr.io/cloud-builders/gcloud'
-#     id: 'setup'
-#     entrypoint: 'bash'
-#     args:
-#       - '-c'
-#       - |
-#         gcloud components install kubectl gke-gcloud-auth-plugin --quiet
-
-#   # Step 0b: Build the pipeline runner image (cached after first runn)
-#   - name: 'gcr.io/cloud-builders/docker'
-#     id: 'build-pipeline-image'
-#     waitFor: ['-']   # Run immediately, no dependencyy
-#     args:
-#       - 'build'
-#       - '-t'
-#       - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
-#       - '--cache-from'
-#       - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
-#       - '-f'
-#       - 'Dockerfile.pipeline'
-#       - '.'
-
-#   # Step 1: Run model processing pipeline using pre-baked imagee
-#   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
-#     id: 'run-pipeline'
-#     waitFor: ['build-pipeline-image']
-#     entrypoint: 'python'
-#     args:
-#       - 'model_pipeline/run_pipeline.py'
-#       - '--model'
-#       - 'bvanaken/clinical-assertion-negation-bert'
-#       - '--output'
-#       - './output'
-#       - '--gcs-uri'
-#       - 'gs://$PROJECT_ID-ml-models/clinical_assertion'
-#       - '--project-id'
-#       - '$PROJECT_ID'
-#       - '--threshold'
-#       - '0.95'
-#     env:
-#       - 'PROJECT_ID=$PROJECT_ID'
-
-#   # Step 2: Build backend Docker image
-#   - name: 'gcr.io/cloud-builders/docker'
-#     id: 'build-backend'
-#     waitFor: ['run-pipeline']
-#     args:
-#       - 'build'
-#       - '-t'
-#       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA'
-#       - '-f'
-#       - 'Dockerfile.backend'
-#       - '--build-arg'
-#       - 'TRITON_GRPC_PORT=8001'
-#       - '.'
-
-#   # Step 3: Build frontend Docker image
-#   - name: 'gcr.io/cloud-builders/docker'
-#     id: 'build-frontend'
-#     waitFor: ['run-pipeline']
-#     args:
-#       - 'build'
-#       - '-t'
-#       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA'
-#       - '-f'
-#       - 'Dockerfile.frontend'
-#       - '.'
-
-#   # Step 4: Push images
-#   - name: 'gcr.io/cloud-builders/docker'
-#     id: 'push-images'
-#     waitFor: ['build-backend', 'build-frontend']
-#     entrypoint: 'bash'
-#     args:
-#       - '-c'
-#       - |
-#         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:$COMMIT_SHA
-#         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:$COMMIT_SHA
-#         # Also push the pipeline runner so it's cached for next run
-#         docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest
-
-#   # Step 5: Deploy to GKE
-#   - name: 'gcr.io/cloud-builders/gcloud'
-#     id: 'deploy'
-#     waitFor: ['push-images']
-#     entrypoint: 'bash'
-#     args:
-#       - '-c'
-#       - |
-#         apt-get update && apt-get install -y gettext-base
-
-#         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-#           echo "Conditions met. Starting deployment..."
-
-#           gcloud container clusters get-credentials $_CLUSTER \
-#             --region $_REGION --project $PROJECT_ID
-
-#           export IMAGE_TAG=$COMMIT_SHA
-
-#           kubectl apply -f k8s/namespaces.yaml
-#           kubectl apply -f k8s/kserve-config.yaml
-
-#           envsubst < k8s/triton-inference.yaml | kubectl apply -f -
-#           envsubst < k8s/backend-deployment.yaml | kubectl apply -f -
-#           envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
-#           envsubst < k8s/ingress.yaml | kubectl apply -f -
-
-#           echo "Deployment complete!"
-#         else
-#           echo "Skipping deployment for branch: $BRANCH_NAME"
-#         fi
-#     env:
-#       - 'PROJECT_ID=$PROJECT_ID'
-#       - 'REGION=$_REGION'
-#       - 'COMMIT_SHA=$COMMIT_SHA'
-#       - '_CLUSTER=$_CLUSTER'
-
-#   # Step 6: Smoke Tests
-#   - name: 'python:3.12-slim'
-#     id: 'smoke-tests'
-#     waitFor: ['deploy']
-#     entrypoint: 'bash'
-#     args:
-#       - '-c'
-#       - |
-#         if [[ "$BRANCH_NAME" == "feat/deploy-model" || "$TAG_NAME" != "" ]]; then
-#           pip install httpx
-#           python -c "
-#         import httpx, time, sys, os
-#         base = os.getenv('DOMAIN_NAME', 'http://your-static-ip')
-#         for _ in range(30):
-#             try:
-#                 r = httpx.get(f'{base}/health', timeout=5)
-#                 if r.status_code == 200:
-#                     print('✓ Health check passed')
-#                     sys.exit(0)
-#             except:
-#                 pass
-#             time.sleep(10)
-#         print('✗ Health check failed')
-#         sys.exit(1)"
-#         fi
-
-# substitutions:
-#   _REGION: us-central1
-#   _CLUSTER: ml-platform-cluster
-
-# options:
-#   logging: CLOUD_LOGGING_ONLY
-#   dynamic_substitutions: true
-
-# timeout: '1800s'
+timeout: '3000s'
