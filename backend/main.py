@@ -17,12 +17,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from transformers import AutoTokenizer
 import numpy as np
 
-from models import (
+# AFTER:
+from backend.models import (
     PredictRequest, PredictResponse,
     BatchPredictRequest, BatchPredictResponse,
     HealthResponse
 )
-from triton_client import TritonClient
+from backend.triton_client import TritonClient
+
 
 logging.basicConfig(
     level=logging.INFO,
