@@ -78,7 +78,7 @@ def run_pipeline(
     accuracy_threshold: float = 0.95,
     skip_quantize: bool = False,
 ) -> bool:
-    VERSION = "1"                          # ← change version here only
+    VERSION = "2"                          # ← change version here only
 
     base = Path(output_dir)
     conv_dir = base / "temp_conversion"
