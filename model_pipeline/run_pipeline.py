@@ -56,6 +56,20 @@ def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
 
     logger.info(f"Uploaded {uploaded} files to GCS.")
 
+def _gcs_model_exists(gcs_uri: str, project_id: str) -> bool:
+    """Return True if model.onnx already exists at the GCS destination."""
+    try:
+        from google.cloud import storage
+        parts = gcs_uri.replace("gs://", "").split("/", 1)
+        bucket_name = parts[0]
+        prefix = (parts[1].rstrip("/") if len(parts) > 1 else "") + "/1/model.onnx"
+        client = storage.Client(project=project_id)
+        bucket = client.bucket(bucket_name)
+        return bucket.blob(prefix).exists()
+    except Exception as e:
+        logger.warning(f"GCS existence check failed ({e}) — running pipeline anyway.")
+        return False
+        
 
 def run_pipeline(
     model_name: str,
@@ -70,6 +84,11 @@ def run_pipeline(
     opt_dir  = base / "temp_optimized"    # quantized model lands here
     repo_dir = base / "model_repository" / "clinical_assertion"
     ver_dir  = repo_dir / "1"
+
+    if gcs_uri and gcs_uri.startswith("gs://"):
+        if _gcs_model_exists(gcs_uri, project_id):
+            logger.info("Model already present in GCS — skipping pipeline.")
+            return True
 
     try:
         # ── 1. Export to ONNX ────────────────────────────────────────────────
