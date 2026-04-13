@@ -1,33 +1,105 @@
-# ConfigMap for KServe runtime defaults (CPU optimization)
-apiVersion: v1
-kind: ConfigMap
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
 metadata:
-  name: inferenceservice-config
-  namespace: kserve
-data:
-  triton: |
-    {
-      "image": "nvcr.io/nvidia/tritonserver:23.12-py3",
-      "defaultImage": "nvcr.io/nvidia/tritonserver:23.12-py3",
-      "cpuLimit": "2000m",
-      "cpuRequest": "1000m",
-      "memoryLimit": "4Gi",
-      "memoryRequest": "2Gi",
-      "defaultGrpcPort": 8001,
-      "defaultHttpPort": 8080,
-      "defaultMetricsPort": 8002
-    }
-  storageInitializer: |
-    {
-      "image": "gcr.io/kubeflow-models/storage-initializer:v0.11.0",
-      "memoryRequest": "100Mi",
-      "memoryLimit": "1Gi",
-      "cpuRequest": "100m",
-      "cpuLimit": "1",
-      "enableDirectPvcVolumeMount": true,
-      "storageConfig": {
-        "gcs": {
-          "gcsCredentialFileName": ""
-        }
-      }
-    }
+  name: clinical-assertion
+  namespace: triton
+  annotations:
+    serving.kserve.io/deploymentMode: "RawDeployment"
+    serving.kserve.io/disableIngressCreation: "true"
+spec:
+  predictor:
+    serviceAccountName: triton-sa
+    minReplicas: 1
+    maxReplicas: 3
+    # ⚠️ Remove scaleMetric/scaleTarget - these are Knative-only
+    triton:  # ← Framework-specific field (required)
+      # Storage config
+      storageUri: "gs://project-e8b9570a-b660-4f1a-ae2-ml-models/clinical_assertion"
+      protocolVersion: "v2"
+      
+      # Resource requests/limits
+      resources:
+        requests:
+          cpu: "1000m"
+          memory: "2Gi"
+        limits:
+          cpu: "2000m"
+          memory: "4Gi"
+      
+      # Environment variables
+      env:
+        - name: OMP_NUM_THREADS
+          value: "2"
+        - name: ONNXRUNTIME_EXECUTION_MODE
+          value: "ORT_SEQUENTIAL"
+        - name: ONNXRUNTIME_INTER_OP_PARALLELISM
+          value: "2"
+        - name: ONNXRUNTIME_INTRA_OP_PARALLELISM
+          value: "2"
+      
+      # ⚠️ Pod customization goes INSIDE the triton block in v1beta1:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-app-pool
+      
+      # Container args must be specified here for v1beta1 Triton
+      args:
+        - "--model-repository=/mnt/models"
+        - "--strict-model-config=false"
+        - "--http-port=8080"
+        - "--grpc-port=8001"
+        - "--metrics-port=8002"
+        - "--log-verbose=0"
+        - "--backend-config=onnxruntime,cpu-threads=2"
+        - "--backend-config=onnxruntime,inter-op-parallelism=2"
+        - "--backend-config=onnxruntime,intra-op-parallelism=2"
+      
+      # Probes also go inside triton block
+      readinessProbe:
+        httpGet:
+          path: /v2/health/ready
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 6
+      livenessProbe:
+        httpGet:
+          path: /v2/health/live
+          port: 8080
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+      startupProbe:
+        httpGet:
+          path: /v2/health/ready
+          port: 8080
+        failureThreshold: 30
+        periodSeconds: 10
+---
+# Keep your ClusterIP service as-is (this part was correct)
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-triton-service
+  namespace: triton
+  labels:
+    app: clinical-triton
+spec:
+  type: ClusterIP
+  selector:
+    serving.kserve.io/inferenceservice: clinical-assertion
+  ports:
+    - name: grpc
+      port: 8001
+      targetPort: 8001
+      protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 8002
+      targetPort: 8002
+      protocol: TCP
+  sessionAffinity: None

@@ -3,7 +3,9 @@ kind: Namespace
 metadata:
   name: triton
   labels:
-    kserve.io/inference: enabled
+    # Required so KServe's mutating webhook injects the storage-initializer
+    # into pods in this namespace
+    serving.kserve.io/inferenceservice: enabled
 ---
 apiVersion: v1
 kind: Namespace
