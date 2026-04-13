@@ -10,7 +10,7 @@ steps:
         docker pull us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
           || true   # Don't fail if image doesn't exist yet (first run)
 
-  # ── 1: Pull backend/frontend cache in parallel with above ────────────────
+  # ── 1: Pull backend/frontend cache in parallel with abovee ────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'pull-app-cache'
     waitFor: ['-']
