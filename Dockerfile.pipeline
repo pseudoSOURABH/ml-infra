@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements separately for pip cache layer
 COPY model_pipeline/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
@@ -30,7 +31,13 @@ print('Model and tokenizer baked into image.')"
 ENV TRANSFORMERS_OFFLINE=1 \
     HF_HUB_OFFLINE=1
 
+# Copy pipeline code — this layer invalidates on ANY change to model_pipeline/
 COPY model_pipeline/ /workspace/model_pipeline/
+
+# Hard fail at build time if config.pbtxt is missing — never silently ship a broken image
+RUN test -f /workspace/model_pipeline/config.pbtxt \
+    && echo "✓ config.pbtxt found" \
+    || (echo "ERROR: config.pbtxt missing from model_pipeline/" && exit 1)
 
 ENV PYTHONPATH="/workspace/model_pipeline"
 
