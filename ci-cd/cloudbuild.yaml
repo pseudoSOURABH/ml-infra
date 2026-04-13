@@ -117,7 +117,7 @@ steps:
     args:
       - '-c'
       - |
-        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
           echo "Skipping deployment for branch: $BRANCH_NAME"
           exit 0
         fi
@@ -165,7 +165,7 @@ steps:
       - '-c'
       - |
         # Exit early on non-deploy branches — don't waste time installing httpx
-        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
           echo "Skipping smoke tests for branch: $BRANCH_NAME"
           exit 0
         fi
