@@ -1,18 +1,61 @@
-# Dockerfile.pipeline
-# Pre-bakes all heavy ML dependencies so Cloud Build doesn't reinstall them every run.
 FROM python:3.12-slim
 
-WORKDIR /workspace
-
-# Install system deps
+# System deps needed to compile grpcio, tokenizers (Rust), numpy C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
+        gcc \
+        g++ \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install requirements first (layer-cached by Docker)
+# ── Layer 1: Install torch CPU separately (needs custom index URL) ────────────
+# torch CPU wheel is ~600MB vs ~2.5GB for CUDA. Must use --index-url flag
+# which can't be expressed inside requirements.txt itself.
+# Cached until this RUN command changes.
+RUN pip install --no-cache-dir \
+        torch==2.4.0 \
+        --index-url https://download.pytorch.org/whl/cpu
+
+# ── Layer 2: Install remaining ML dependencies ────────────────────────────────
+# Cached until requirements.txt changes.
+# torch is already installed above so pip won't re-download it.
 COPY model_pipeline/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Default workdir for Cloud Build
+# ── Layer 3: Bake HuggingFace model into image ────────────────────────────────
+# Cached until Layer 1 or 2 changes (almost never in practice).
+# HF_HOME=/app/hf_cache puts model files at a known, fixed path inside the
+# image that run_pipeline.py will reference via the HF_HOME env var.
+# TRANSFORMERS_OFFLINE=0 here so the download actually runs at build time.
+ENV HF_HOME=/app/hf_cache \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    TRANSFORMERS_OFFLINE=0 \
+    HF_HUB_OFFLINE=0
+
+RUN python -c "\
+from transformers import AutoTokenizer, AutoModelForSequenceClassification; \
+model_id = 'bvanaken/clinical-assertion-negation-bert'; \
+print('=== Downloading tokenizer ==='); \
+tok = AutoTokenizer.from_pretrained(model_id); \
+print('=== Downloading model weights ==='); \
+mdl = AutoModelForSequenceClassification.from_pretrained(model_id); \
+print('=== Verifying tokenizer works ==='); \
+out = tok('patient denies fever', return_tensors='pt'); \
+print('input_ids shape:', out.input_ids.shape); \
+print('=== Model baked into /app/hf_cache ===')"
+
+# Enforce offline mode for all runtime uses of this image.
+# convert_to_onnx.py calls from_pretrained() — this ensures it reads
+# from /app/hf_cache instead of calling HuggingFace Hub.
+ENV TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1
+
+# ── Layer 4: Pipeline source code ────────────────────────────────────────────
+# Last so that editing any .py file only busts this cheap COPY layer,
+# not the 1GB+ model/torch layers above it.
+COPY model_pipeline/ ./model_pipeline/
+COPY model_repository/ ./model_repository/
+
+# Cloud Build mounts /workspace as the shared volume and runs the container
+# with /workspace as cwd. Setting WORKDIR here means the entrypoint
+# (python model_pipeline/run_pipeline.py) resolves paths from /workspace.
 WORKDIR /workspace

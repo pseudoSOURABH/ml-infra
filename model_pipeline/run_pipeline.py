@@ -10,6 +10,14 @@ import shutil
 import time
 from pathlib import Path
 
+# ── Enforce HuggingFace offline mode before any transformers import ───────────
+# The model is baked into the Docker image at /app/hf_cache.
+# HF_HOME is set in the image ENV, but set it here too as a safety net
+# in case someone runs this script outside the pipeline container.
+os.environ.setdefault("HF_HOME", "/app/hf_cache")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 from convert_to_onnx import convert_model
 from optimize_model import optimize_for_cpu
 from validate_model import evaluate_model
@@ -19,6 +27,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Absolute path to this file's directory — used to locate bundled configs
+# that were COPYed into the image alongside the pipeline code.
+_PIPELINE_DIR = Path(__file__).parent.resolve()
 
 
 def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
@@ -66,8 +78,8 @@ def run_pipeline(
     skip_quantize: bool = False,
 ) -> bool:
     base = Path(output_dir)
-    conv_dir = base / "temp_conversion"   # ONNX + tokenizer land here
-    opt_dir  = base / "temp_optimized"    # quantized model lands here
+    conv_dir = base / "temp_conversion"
+    opt_dir  = base / "temp_optimized"
     repo_dir = base / "model_repository" / "clinical_assertion"
     ver_dir  = repo_dir / "1"
 
@@ -75,7 +87,6 @@ def run_pipeline(
         # ── 1. Export to ONNX ────────────────────────────────────────────────
         logger.info(f"=== Step 1: Converting {model_name} to ONNX ===")
         onnx_path = convert_model(model_name, str(conv_dir))
-
 
         # ── 2. Quantize ──────────────────────────────────────────────────────
         logger.info("=== Step 2: Quantizing for CPU ===")
@@ -85,13 +96,13 @@ def run_pipeline(
             quantize=not skip_quantize,
         )
 
-        # FIX: Copy HF metadata so the validation step (optimum) can load the model
+        # Copy HF metadata files so validation step can load tokenizer
         metadata_files = [
-            "config.json", 
-            "vocab.txt", 
-            "tokenizer.json", 
-            "tokenizer_config.json", 
-            "special_tokens_map.json"
+            "config.json",
+            "vocab.txt",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
         ]
         for filename in metadata_files:
             src_file = conv_dir / filename
@@ -102,7 +113,6 @@ def run_pipeline(
 
         # ── 3. Validate ──────────────────────────────────────────────────────
         logger.info("=== Step 3: Validating model ===")
-        # Now evaluate_model will find the config.json it needs in opt_dir
         if not evaluate_model(str(final_model), str(conv_dir), accuracy_threshold):
             logger.error("Validation failed.")
             return False
@@ -122,9 +132,15 @@ def run_pipeline(
             if src.exists():
                 shutil.copy2(str(src), str(ver_dir / fname))
 
-        config_src = Path("model_repository/clinical_assertion/config.pbtxt")
+        # FIX: Use __file__-relative path so this works regardless of cwd.
+        # At runtime the image has model_repository/ at /workspace/model_repository/
+        # because Dockerfile.pipeline COPYs it there and WORKDIR is /workspace.
+        config_src = _PIPELINE_DIR.parent / "model_repository" / "clinical_assertion" / "config.pbtxt"
         if config_src.exists():
             shutil.copy2(str(config_src), str(repo_dir / "config.pbtxt"))
+            logger.info(f"Copied config.pbtxt from {config_src}")
+        else:
+            logger.warning(f"config.pbtxt not found at {config_src} — Triton will use auto-config")
 
         # ── 5. Upload ────────────────────────────────────────────────────────
         if gcs_uri:
@@ -139,6 +155,7 @@ def run_pipeline(
         return False
 
     finally:
+        # Always clean up temp dirs to keep /workspace tidy
         shutil.rmtree(str(conv_dir), ignore_errors=True)
         shutil.rmtree(str(opt_dir), ignore_errors=True)
 
@@ -147,11 +164,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model",        required=True)
-    parser.add_argument("--output",       default="./output")
-    parser.add_argument("--gcs-uri",      default="")
-    parser.add_argument("--project-id",   default="")
-    parser.add_argument("--threshold",    type=float, default=0.95)
+    parser.add_argument("--model",         required=True)
+    parser.add_argument("--output",        default="./output")
+    parser.add_argument("--gcs-uri",       default="")
+    parser.add_argument("--project-id",    default="")
+    parser.add_argument("--threshold",     type=float, default=0.95)
     parser.add_argument("--skip-quantize", action="store_true")
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
+# torch is installed separately in Dockerfile.pipeline via --index-url
+# to get the CPU-only wheel. Do NOT add torch here or pip will pull CUDA (~2.5GB).
 transformers==4.41.0
-torch==2.4.0
 onnx==1.16.0
 onnxruntime==1.18.0
 optimum[onnxruntime]==1.21.0
