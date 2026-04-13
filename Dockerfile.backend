@@ -28,7 +28,8 @@ ENV PATH="/home/appuser/.local/bin:$PATH"
 
 # Copy application code
 COPY backend/ ./backend/
-COPY model_repository/clinical_assertion/config.pbtxt /app/config.pbtxt
+COPY output/model_repository/clinical_assertion/1/model.onnx /app/model.onnx
+COPY output/model_repository/clinical_assertion/config.pbtxt /app/config.pbtxt
 
 # Set ownership
 RUN chown -R appuser:appuser /app
