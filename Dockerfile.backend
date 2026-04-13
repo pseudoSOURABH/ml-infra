@@ -48,12 +48,13 @@ COPY --from=tokenizer-cache /tokenizer_cache /home/appuser/.cache/huggingface
 ENV PATH="/home/appuser/.local/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/app" \
+    # Fixed
+    PYTHONPATH="/app:/app/backend"
     # Point HF to the baked-in cache — no network calls at startup
     HF_HOME="/home/appuser/.cache/huggingface" \
     # Disable HF's telemetry
     HF_HUB_DISABLE_TELEMETRY=1 \
-    # Disable tokenizers parallelism warning (single-threaded inference)
+    # Disable tokenizers parallelism warning (single-threaded inferencee)
     TOKENIZERS_PARALLELISM=false
 
 COPY backend/ ./backend/
