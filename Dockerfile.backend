@@ -1,4 +1,4 @@
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
+# ── Stage 1: Build dependencies ───────────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -9,9 +9,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+# Show exactly what gets installed — visible in build logs for debugging
+RUN pip install --user --no-cache-dir -r requirements.txt \
+    && pip show transformers numpy | grep -E "^(Name|Version):"
+
+# ── Stage 2: Download tokenizer into image at build time ──────────────────────
+# Done in builder so the ~250MB download doesn't bloat the runtime layer diff
+# and benefits from Docker layer caching between code-only changes
+FROM python:3.12-slim AS tokenizer-cache
+
+COPY --from=builder /root/.local /root/.local
+ENV PATH="/root/.local/bin:$PATH"
+
+# Bake tokenizer files into image — eliminates network dependency at pod startup
+# HF_HOME controls where files land so we can COPY them precisely
+ENV HF_HOME=/tokenizer_cache
+RUN python -c "\
+from transformers import AutoTokenizer; \
+t = AutoTokenizer.from_pretrained('bvanaken/clinical-assertion-negation-bert'); \
+print('Tokenizer files saved to:', t.name_or_path)"
+
+# ── Stage 3: Runtime image ────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -20,28 +39,51 @@ RUN useradd -r -u 1000 -s /sbin/nologin appuser
 
 WORKDIR /app
 
+# Copy installed packages from builder
 COPY --from=builder /root/.local /home/appuser/.local
+
+# Copy pre-downloaded tokenizer cache
+COPY --from=tokenizer-cache /tokenizer_cache /home/appuser/.cache/huggingface
 
 ENV PATH="/home/appuser/.local/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/app"
+    PYTHONPATH="/app" \
+    # Point HF to the baked-in cache — no network calls at startup
+    HF_HOME="/home/appuser/.cache/huggingface" \
+    # Disable HF's telemetry
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    # Disable tokenizers parallelism warning (single-threaded inference)
+    TOKENIZERS_PARALLELISM=false
 
 COPY backend/ ./backend/
 
-RUN chown -R appuser:appuser /app /home/appuser/.local
+RUN chown -R appuser:appuser /app /home/appuser/.local /home/appuser/.cache
 
 USER appuser
 
-RUN python -c "from backend.main import app; print('Import OK')"
+# Verify all critical imports resolve AND tokenizer loads from cache (no network)
+RUN python -c "\
+import os; \
+os.environ['TRANSFORMERS_OFFLINE'] = '1'; \
+from transformers import AutoTokenizer; \
+import numpy as np; \
+import tritonclient.grpc as grpcclient; \
+from backend.main import app; \
+t = AutoTokenizer.from_pretrained('bvanaken/clinical-assertion-negation-bert'); \
+tokens = t('test sentence', return_tensors='np'); \
+assert 'input_ids' in tokens, 'Tokenizer output missing input_ids'; \
+print('✓ All imports OK'); \
+print('✓ Tokenizer loads offline from cache'); \
+print('✓ Token shapes:', {k: v.shape for k, v in tokens.items()})"
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c \
-        "import urllib.request,sys; \
-         r=urllib.request.urlopen('http://localhost:8080/health',timeout=4); \
-         sys.exit(0 if r.status==200 else 1)"
+    CMD python -c "\
+import urllib.request, sys; \
+r = urllib.request.urlopen('http://localhost:8080/health', timeout=4); \
+sys.exit(0 if r.status == 200 else 1)"
 
 CMD ["python", "-m", "uvicorn", "backend.main:app", \
      "--host", "0.0.0.0", \

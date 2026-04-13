@@ -7,3 +7,6 @@ python-multipart==0.0.6
 pydantic==2.5.2
 pydantic-settings==2.1.0
 google-cloud-storage==2.14.0
+transformers==4.38.2
+numpy==1.26.4
+torch==2.2.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu

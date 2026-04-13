@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """FastAPI backend service for clinical assertion inference."""
 
@@ -7,6 +8,9 @@ import time
 import asyncio                           # FIX: was missing, needed for asyncio.sleep
 from contextlib import asynccontextmanager
 from typing import Optional
+
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
