@@ -22,23 +22,7 @@ steps:
         docker pull ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest || true &
         wait
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'build-pipeline-image'
-    waitFor: ['pull-pipeline-cache']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        # Hash of pipeline source — forces image rebuild only when code changes.
-        # The baked model layer is cached by Docker; unchanged code = no re-download.
-        PIPELINE_HASH=$(find model_pipeline/ Dockerfile.pipeline -type f | sort | xargs sha256sum | sha256sum | cut -c1-12)
-        docker build \
-          -t us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
-          -t us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:${PIPELINE_HASH} \
-          --cache-from us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -f Dockerfile.pipeline \
-          .
+  
 
   # ── 3: Run model pipeline — output lands in /workspace/output ────────────
   #       /workspace is automatically shared across all Cloud Build steps
