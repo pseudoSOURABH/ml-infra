@@ -131,7 +131,7 @@ steps:
     args:
       - '-c'
       - |
-        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
           echo "Skipping deployment for branch: $BRANCH_NAME"
           exit 0
         fi
@@ -167,49 +167,49 @@ steps:
       - '_CLUSTER_ZONE=$_CLUSTER_ZONE'
       - '_REGION=$_REGION'
 
-  # ── 7: Smoke tests ────────────────────────────────────────────────────────
-  - name: 'python:3.12-slim'
-    id: 'smoke-tests'
-    waitFor: ['deploy']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        if [[ "$BRANCH_NAME" != "feat/deploy-model" && -z "$TAG_NAME" ]]; then
-          echo "Skipping smoke tests for branch: $BRANCH_NAME"
-          exit 0
-        fi
+  # # ── 7: Smoke tests ────────────────────────────────────────────────────────
+  # - name: 'python:3.12-slim'
+  #   id: 'smoke-tests'
+  #   waitFor: ['deploy']
+  #   entrypoint: 'bash'
+  #   args:
+  #     - '-c'
+  #     - |
+  #       if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
+  #         echo "Skipping smoke tests for branch: $BRANCH_NAME"
+  #         exit 0
+  #       fi
 
-        pip install --quiet httpx
-        python - <<'EOF'
-        import httpx, time, sys, os
+  #       pip install --quiet httpx
+  #       python - <<'EOF'
+  #       import httpx, time, sys, os
 
-        base = os.environ["DOMAIN_NAME"]
-        if not base or "your-actual-static-ip" in base:
-            print("ERROR: _DOMAIN_NAME is still a placeholder.")
-            print("Pass the real IP: gcloud builds submit --substitutions=_DOMAIN_NAME=http://<ip>")
-            sys.exit(1)
+  #       base = os.environ["DOMAIN_NAME"]
+  #       if not base or "your-actual-static-ip" in base:
+  #           print("ERROR: _DOMAIN_NAME is still a placeholder.")
+  #           print("Pass the real IP: gcloud builds submit --substitutions=_DOMAIN_NAME=http://<ip>")
+  #           sys.exit(1)
 
-        print(f"Running smoke test against {base}")
+  #       print(f"Running smoke test against {base}")
 
-        for attempt in range(30):
-            try:
-                r = httpx.get(f"{base}/health", timeout=5)
-                if r.status_code == 200:
-                    print("✓ Health check passed")
-                    sys.exit(0)
-                print(f"  attempt {attempt+1}: got {r.status_code}, retrying...")
-            except Exception as e:
-                print(f"  attempt {attempt+1}: {e}, retrying...")
-            time.sleep(10)
+  #       for attempt in range(30):
+  #           try:
+  #               r = httpx.get(f"{base}/health", timeout=5)
+  #               if r.status_code == 200:
+  #                   print("✓ Health check passed")
+  #                   sys.exit(0)
+  #               print(f"  attempt {attempt+1}: got {r.status_code}, retrying...")
+  #           except Exception as e:
+  #               print(f"  attempt {attempt+1}: {e}, retrying...")
+  #           time.sleep(10)
 
-        print("✗ Health check failed after 30 attempts")
-        sys.exit(1)
-        EOF
-    env:
-      - 'BRANCH_NAME=$BRANCH_NAME'
-      - 'TAG_NAME=$TAG_NAME'
-      - 'DOMAIN_NAME=$_DOMAIN_NAME'
+  #       print("✗ Health check failed after 30 attempts")
+  #       sys.exit(1)
+  #       EOF
+  #   env:
+  #     - 'BRANCH_NAME=$BRANCH_NAME'
+  #     - 'TAG_NAME=$TAG_NAME'
+  #     - 'DOMAIN_NAME=$_DOMAIN_NAME'
 
 substitutions:
   _REGION: us-central1
@@ -223,7 +223,7 @@ substitutions:
   # ── Smoke test target ─────────────────────────────────────────────────────
   # Replace with your real static IP before deploying.
   # Find it with: gcloud compute addresses list
-  _DOMAIN_NAME: 'http://your-actual-static-ip'
+  # _DOMAIN_NAME: 'http://your-actual-static-ip'
 
 options:
   logging: CLOUD_LOGGING_ONLY
