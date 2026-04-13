@@ -1,47 +1,71 @@
-
-# Multi-stage build for minimal, secure backend image
-FROM python:3.12-slim as builder
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# Install build dependencies
+# Only gcc needed to compile grpcio/cryptography wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    python3-dev \
+        gcc \
+        python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
 COPY backend/requirements.txt .
+
+# Install to user-local so we can copy cleanly into the final stage
 RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Production stage
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
-# Create non-root user
-RUN useradd -m -u 1000 -r appuser
+# Suppress Debian trixie uid warning — use -M (no home) + -r (system) flags
+# Explicitly set shell to fail fast on any error
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# Create non-root user without a home directory (nothing to write to)
+RUN useradd -r -u 1000 -s /sbin/nologin appuser
 
 WORKDIR /app
 
-# Copy installed packages from builder
+# Pull only the installed packages from builder — no build tools in final image
 COPY --from=builder /root/.local /home/appuser/.local
-ENV PATH="/home/appuser/.local/bin:$PATH"
 
-# Copy application code
+# Set PATH before switching user so uvicorn/gunicorn are found
+ENV PATH="/home/appuser/.local/bin:$PATH" \
+    # Prevent Python from writing .pyc files into the read-only fs
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Disable output buffering so logs appear immediately in Cloud Logging
+    PYTHONUNBUFFERED=1 \
+    # Tell Python where the app lives (cleaner imports)
+    PYTHONPATH="/app"
+
+# Copy application code — done late so code changes don't bust the pip cache layer
 COPY backend/ ./backend/
-COPY output/model_repository/clinical_assertion/1/model.onnx /app/model.onnx
-COPY output/model_repository/clinical_assertion/config.pbtxt /app/config.pbtxt
 
-# Set ownership
-RUN chown -R appuser:appuser /app
+# Lock down ownership in one layer — chown on COPY is not available in older Docker
+RUN chown -R appuser:appuser /app /home/appuser/.local
 
+# Drop to non-root for all subsequent steps
 USER appuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import httpx; exit(0 if httpx.get('http://localhost:8080/health').status_code == 200 else 1)" || exit 1
+# Verify the app imports cleanly at build time — catches missing deps immediately
+# rather than at container startup in production
+RUN python -c "from backend.main import app; print('Import OK')"
 
-# Expose port
 EXPOSE 8080
 
-# Run with uvicorn
-CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+# Tighter healthcheck — no httpx import overhead, just a process check via the
+# already-running uvicorn. Uses curl from the base image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c \
+        "import urllib.request,sys; \
+         r=urllib.request.urlopen('http://localhost:8080/health',timeout=4); \
+         sys.exit(0 if r.status==200 else 1)"
+
+# Single worker is correct here — Triton handles concurrency, not the backend.
+# Use --no-access-log to avoid double-logging with Cloud Logging.
+CMD ["python", "-m", "uvicorn", "backend.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--workers", "1", \
+     "--no-access-log", \
+     "--log-level", "info"]
