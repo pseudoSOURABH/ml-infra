@@ -23,12 +23,14 @@ steps:
         wait
 
   # ── 2: Build pipeline runner image ───────────────────────────────────────
-  # -f ../Dockerfile.pipeline  → Dockerfile lives at ml-infra/ml-infra/ (one level above ci-cd/)
-  # ../                        → build context is ml-infra/ml-infra/ so COPY model_pipeline/
-  #                              and COPY model_repository/ resolve correctly
+  # dir: sets the working directory to ml-infra/ml-infra/ (repo root) so that:
+  #   -f Dockerfile.pipeline  → found at ml-infra/ml-infra/Dockerfile.pipeline
+  #   .                       → build context is ml-infra/ml-infra/ so COPY model_pipeline/
+  #                             and COPY model_repository/ both resolve correctly
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
     waitFor: ['pull-pipeline-cache']
+    dir: '.'                           # /workspace = ml-infra/ml-infra/ (repo root)
     args:
       - 'build'
       - '-t'
@@ -36,8 +38,8 @@ steps:
       - '--cache-from'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
       - '-f'
-      - '../Dockerfile.pipeline'   # ← was 'Dockerfile.pipeline' (not found from ci-cd/)
-      - '../'                      # ← was '.'  (ci-cd/ has no model_pipeline/ or model_repository/)
+      - 'Dockerfile.pipeline'          # relative to dir above → ml-infra/ml-infra/
+      - '.'                            # build context = ml-infra/ml-infra/
 
   # ── 3: Run model pipeline ─────────────────────────────────────────────────
   # Cloud Build mounts /workspace into the container automatically.
@@ -67,11 +69,11 @@ steps:
       - 'HF_HUB_OFFLINE=1'
 
   # ── 4a: Build backend (parallel with frontend, no pipeline dependency) ────
-  # -f ../Dockerfile.backend  → Dockerfile lives at ml-infra/ml-infra/
-  # ../                       → build context is ml-infra/ml-infra/ so COPY backend/ works
+  # dir: sets cwd to repo root so -f and context . both resolve from ml-infra/ml-infra/
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['pull-app-cache']
+    dir: '.'                           # /workspace = ml-infra/ml-infra/ (repo root)
     args:
       - 'build'
       - '-t'
@@ -81,17 +83,17 @@ steps:
       - '--cache-from'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/backend:latest'
       - '-f'
-      - '../Dockerfile.backend'        # ← was 'Dockerfile.backend'
+      - 'Dockerfile.backend'           # relative to dir above → ml-infra/ml-infra/
       - '--build-arg'
       - 'TRITON_GRPC_PORT=8001'
-      - '../'                          # ← was '.'
+      - '.'                            # build context = ml-infra/ml-infra/
 
   # ── 4b: Build frontend (parallel with backend) ───────────────────────────
-  # -f ../Dockerfile.frontend → Dockerfile lives at ml-infra/ml-infra/
-  # ../                       → build context is ml-infra/ml-infra/ so COPY frontend/ works
+  # dir: sets cwd to repo root so -f and context . both resolve from ml-infra/ml-infra/
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     waitFor: ['pull-app-cache']
+    dir: '.'                           # /workspace = ml-infra/ml-infra/ (repo root)
     args:
       - 'build'
       - '-t'
@@ -101,8 +103,8 @@ steps:
       - '--cache-from'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/frontend:latest'
       - '-f'
-      - '../Dockerfile.frontend'       # ← was 'Dockerfile.frontend'
-      - '../'                          # ← was '.'
+      - 'Dockerfile.frontend'          # relative to dir above → ml-infra/ml-infra/
+      - '.'                            # build context = ml-infra/ml-infra/
 
   # ── 5: Push all images in parallel ───────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
@@ -123,6 +125,7 @@ steps:
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     id: 'deploy'
     waitFor: ['push-images']
+    dir: '.'                           # /workspace = ml-infra/ml-infra/ (repo root)
     entrypoint: 'bash'
     args:
       - '-c'
@@ -142,13 +145,13 @@ steps:
         export PROJECT_ID=$PROJECT_ID
         export REGION=$_REGION
 
-        # k8s/ manifests live at ml-infra/ml-infra/k8s/, one level above ci-cd/
-        kubectl apply -f ../k8s/namespaces.yaml                          # ← was k8s/
-        kubectl apply -f ../k8s/kserve-config.yaml                       # ← was k8s/
-        envsubst < ../k8s/triton-inference.yaml    | kubectl apply -f -  # ← was k8s/
-        envsubst < ../k8s/backend-deployment.yaml  | kubectl apply -f -  # ← was k8s/
-        envsubst < ../k8s/frontend-deployment.yaml | kubectl apply -f -  # ← was k8s/
-        envsubst < ../k8s/ingress.yaml             | kubectl apply -f -  # ← was k8s/
+        # k8s/ is at ml-infra/ml-infra/k8s/ — resolved correctly via dir: '.' above
+        kubectl apply -f k8s/namespaces.yaml
+        kubectl apply -f k8s/kserve-config.yaml
+        envsubst < k8s/triton-inference.yaml    | kubectl apply -f -
+        envsubst < k8s/backend-deployment.yaml  | kubectl apply -f -
+        envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
+        envsubst < k8s/ingress.yaml             | kubectl apply -f -
 
         kubectl rollout status deployment/clinical-backend -n api --timeout=300s
         kubectl rollout status deployment/frontend -n frontend --timeout=300s
