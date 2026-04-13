@@ -83,7 +83,7 @@ def run_pipeline(
     conv_dir = base / "temp_conversion"   # ONNX + tokenizer land here
     opt_dir  = base / "temp_optimized"    # quantized model lands here
     repo_dir = base / "model_repository" / "clinical_assertion"
-    ver_dir  = repo_dir / "1"
+    ver_dir  = repo_dir / "2"
 
     if gcs_uri and gcs_uri.startswith("gs://"):
         if _gcs_model_exists(gcs_uri, project_id):
