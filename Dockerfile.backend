@@ -45,16 +45,16 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Copy pre-downloaded tokenizer cache
 COPY --from=tokenizer-cache /tokenizer_cache /home/appuser/.cache/huggingface
 
+# Runtime environment config
+# - Disable pyc files
+# - Ensure logs are flushed
+# - Use baked HF cache (offline)
 ENV PATH="/home/appuser/.local/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # Fixed
-    PYTHONPATH="/app:/app/backend"
-    # Point HF to the baked-in cache — no network calls at startup
+    PYTHONPATH="/app:/app/backend" \
     HF_HOME="/home/appuser/.cache/huggingface" \
-    # Disable HF's telemetry
     HF_HUB_DISABLE_TELEMETRY=1 \
-    # Disable tokenizers parallelism warning (single-threaded inferencee)
     TOKENIZERS_PARALLELISM=false
 
 COPY backend/ ./backend/
