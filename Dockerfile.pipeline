@@ -31,6 +31,7 @@ ENV TRANSFORMERS_OFFLINE=1 \
     HF_HUB_OFFLINE=1
 
 COPY model_pipeline/ /workspace/model_pipeline/
+COPY model_repository/ /workspace/model_repository/ 
 ENV PYTHONPATH="/workspace/model_pipeline"
 
 WORKDIR /workspace
