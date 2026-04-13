@@ -25,7 +25,7 @@ steps:
   # ── 2: Build pipeline runner image ───────────────────────────────────────
   # dir: '.' sets cwd to /workspace (repo root ml-infra/ml-infra/) so:
   #   -f Dockerfile.pipeline  → /workspace/Dockerfile.pipeline  ✓
-  #   .  (build context)      → /workspace/ which contains model_pipeline/
+  #   .  (build context)      → /workspace/ which contains model_pipelinee/
   #                             and model_repository/  ✓
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-pipeline-image'
