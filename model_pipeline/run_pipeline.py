@@ -121,7 +121,6 @@ def run_pipeline(
 
         # ── 3. Validate ──────────────────────────────────────────────────────
         logger.info("=== Step 3: Validating model ===")
-        # Now evaluate_model will find the config.json it needs in opt_dir
         if not evaluate_model(str(final_model), str(conv_dir), accuracy_threshold):
             logger.error("Validation failed.")
             return False
@@ -141,9 +140,15 @@ def run_pipeline(
             if src.exists():
                 shutil.copy2(str(src), str(ver_dir / fname))
 
-        config_src = Path("model_repository/clinical_assertion/config.pbtxt")
+        # Pick config.pbtxt from model_repository/clinical_assertion/ at repo root
+        config_src = Path(__file__).parent.parent / "model_repository" / "clinical_assertion" / "config.pbtxt"
         if config_src.exists():
             shutil.copy2(str(config_src), str(repo_dir / "config.pbtxt"))
+            logger.info(f"Copied config.pbtxt from {config_src}")
+        else:
+            raise FileNotFoundError(
+                f"config.pbtxt not found at {config_src} — Triton will reject the model!"
+            )
 
         # ── 5. Upload ────────────────────────────────────────────────────────
         if gcs_uri:
