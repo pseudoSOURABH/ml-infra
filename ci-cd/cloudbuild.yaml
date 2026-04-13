@@ -31,14 +31,24 @@ steps:
       - 'build'
       - '-t'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+      - '--cache-from'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
       - '-f'
       - 'Dockerfile.pipeline'
       - '.'
 
+  # ── 2b: Push pipeline image so step 3 uses the freshly built one ─────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-pipeline-image'
+    waitFor: ['build-pipeline-image']
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
+
   # ── 3: Run model pipeline ─────────────────────────────────────────────────
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
-    waitFor: ['build-pipeline-image']
+    waitFor: ['push-pipeline-image']
     entrypoint: 'python'
     args:
       - 'model_pipeline/run_pipeline.py'
@@ -59,7 +69,6 @@ steps:
       - 'HF_HUB_OFFLINE=1'
 
   # ── 4a: Build backend ────────────────────────────────────────────────────
-  # Image name: clinical-backend  ← matches k8s/backend-deployment.yaml exactly
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['pull-app-cache']
@@ -79,7 +88,6 @@ steps:
       - '.'
 
   # ── 4b: Build frontend ───────────────────────────────────────────────────
-  # Image name: clinical-frontend  ← matches k8s/frontend-deployment.yaml exactly
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     waitFor: ['pull-app-cache']
@@ -108,7 +116,6 @@ steps:
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/clinical-backend:latest &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/clinical-frontend:$COMMIT_SHA &
         docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/clinical-frontend:latest &
-        docker push us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest &
         wait
 
   # # ── 6: Deploy to GKE ─────────────────────────────────────────────────────
@@ -130,7 +137,6 @@ steps:
   #       gcloud container clusters get-credentials $_CLUSTER \
   #         --zone $_CLUSTER_ZONE --project $PROJECT_ID
 
-  #       # Single source of truth: COMMIT_SHA is used everywhere in k8s yamls
   #       export COMMIT_SHA=$COMMIT_SHA
   #       export PROJECT_ID=$PROJECT_ID
   #       export REGION=$_REGION
@@ -153,7 +159,7 @@ steps:
   #     - 'COMMIT_SHA=$COMMIT_SHA'
   #     - '_CLUSTER=$_CLUSTER'
   #     - '_CLUSTER_ZONE=$_CLUSTER_ZONE'
-      # - '_REGION=$_REGION'
+  #     - '_REGION=$_REGION'
 
 substitutions:
   _REGION: us-central1
