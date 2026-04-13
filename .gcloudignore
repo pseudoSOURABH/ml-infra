@@ -1,5 +1,11 @@
+# Model pipeline code (executed in Step 1)
+!model_pipeline/*.py
+!model_pipeline/requirements.txt
+!model_pipeline/config.pbtxt    ← add this line
+
 # .cloudignore
 # ==================== GIT (Cloud Build fetches its own) ====================
+
 .git/
 .gitignore
 .gitattributes
@@ -11,6 +17,7 @@
 *.swp
 *.swo
 *~
+
 
 # Local virtual environments (build uses fresh container)
 venv/
@@ -107,7 +114,7 @@ __pycache__/
 # Core application code
 !backend/
 !frontend/
-!model_pipeline/
+
 !k8s/
 !ci-cd/
 

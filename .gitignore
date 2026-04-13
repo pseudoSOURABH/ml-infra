@@ -188,4 +188,5 @@ yarn-error.log*
 !requirements-dev.txt
 !Makefile
 !.gitignore
-!.cloudignore
+!.cloudignore!model_pipeline/config.pbtxt
+!model_pipeline/*.py
