@@ -141,7 +141,7 @@ def run_pipeline(
                 shutil.copy2(str(src), str(ver_dir / fname))
 
         # Pick config.pbtxt from model_repository/clinical_assertion/ at repo root
-        config_src = Path(__file__).parent.parent / "model_repository" / "clinical_assertion" / "config.pbtxt"
+        config_src = Path(__file__).parent / "config.pbtxt"
         if config_src.exists():
             shutil.copy2(str(config_src), str(repo_dir / "config.pbtxt"))
             logger.info(f"Copied config.pbtxt from {config_src}")
