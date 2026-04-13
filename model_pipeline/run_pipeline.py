@@ -140,7 +140,7 @@ def run_pipeline(
             if src.exists():
                 shutil.copy2(str(src), str(ver_dir / fname))
 
-        # Pick config.pbtxt from model_repository/clinical_assertion/ at repo root
+        # Pick config.pbtxt from model_repository/clinical_assertion/ at repo roott
         config_src = Path(__file__).parent / "config.pbtxt"
         if config_src.exists():
             shutil.copy2(str(config_src), str(repo_dir / "config.pbtxt"))
