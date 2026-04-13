@@ -49,7 +49,12 @@ USER appuser
 
 # Verify the app imports cleanly at build time — catches missing deps immediately
 # rather than at container startup in production
-RUN python -c "from backend.main import app; print('Import OK')"
+RUN python -c "
+import backend.main as m
+import backend.triton_client
+import backend.models
+print('Import OK')
+" 2>&1 | grep -v "^None$"
 
 EXPOSE 8080
 

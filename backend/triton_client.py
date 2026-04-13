@@ -144,6 +144,8 @@ class TritonClient:
             
             # Parse response
             logits = response.as_numpy("logits")[0]  # Shape: [3]
+            logits_stable = logits - np.max(logits)
+            probabilities = np.exp(logits_stable) / np.sum(np.exp(logits_stable))
             probabilities = np.exp(logits) / np.sum(np.exp(logits))
             
             pred_idx = int(np.argmax(probabilities))
