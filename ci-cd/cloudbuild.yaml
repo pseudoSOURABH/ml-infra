@@ -43,15 +43,16 @@ steps:
 
   # ── 3: Run model pipeline ─────────────────────────────────────────────────
   # Cloud Build mounts /workspace into the container automatically.
-  # The image has model weights at /app/hf_cache (baked at build time).
-  # run_pipeline.py lives at /app/model_pipeline/ inside the image.
-  # WORKDIR in Dockerfile.pipeline is /workspace so relative imports work.
+  # HF model weights are baked into the image at /app/hf_cache.
+  # Dockerfile.pipeline COPYs source to /workspace/model_pipeline/ and sets
+  # WORKDIR /workspace — so run_pipeline.py is at model_pipeline/run_pipeline.py
+  # relative to cwd, and sibling imports (convert_to_onnx, etc.) resolve correctly.
   - name: 'us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/pipeline-runner:latest'
     id: 'run-pipeline'
     waitFor: ['build-pipeline-image']
     entrypoint: 'python'
     args:
-      - '/app/model_pipeline/run_pipeline.py'
+      - 'model_pipeline/run_pipeline.py'   # relative to WORKDIR /workspace inside image
       - '--model'
       - 'bvanaken/clinical-assertion-negation-bert'
       - '--output'
@@ -64,8 +65,8 @@ steps:
       - '0.95'
     env:
       - 'PROJECT_ID=$PROJECT_ID'
-      - 'HF_HOME=/app/hf_cache'
-      - 'TRANSFORMERS_OFFLINE=1'
+      - 'HF_HOME=/app/hf_cache'        # must match Dockerfile.pipeline ENV
+      - 'TRANSFORMERS_OFFLINE=1'        # use baked cache, never hit HF network
       - 'HF_HUB_OFFLINE=1'
 
   # ── 4a: Build backend (parallel with frontend, no pipeline dependency) ────
@@ -120,9 +121,8 @@ steps:
         wait
 
   # ── 6: Deploy to GKE ─────────────────────────────────────────────────────
-  # Uses the full cloud-sdk image (NOT :slim).
-  # :slim strips kubectl + gke-gcloud-auth-plugin and blocks gcloud components install.
-  # The full image has both pre-installed — no extra install step needed.
+  # Full cloud-sdk image (NOT :slim) — has kubectl + gke-gcloud-auth-plugin
+  # pre-installed. :slim strips both and blocks gcloud components install.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy'
     waitFor: ['push-images']
@@ -138,8 +138,7 @@ steps:
 
         apt-get update -qq && apt-get install -y -qq gettext-base
 
-        # --zone not --region: your cluster is ZONAL (us-central1-a), not regional.
-        # Confirm with: gcloud container clusters list
+        # --zone not --region: cluster is ZONAL (us-central1-a), not regional.
         gcloud container clusters get-credentials $_CLUSTER \
           --zone $_CLUSTER_ZONE --project $PROJECT_ID
 
@@ -167,7 +166,7 @@ steps:
       - '_CLUSTER_ZONE=$_CLUSTER_ZONE'
       - '_REGION=$_REGION'
 
-  # # ── 7: Smoke tests ────────────────────────────────────────────────────────
+  # ── 7: Smoke tests (commented out until _DOMAIN_NAME is set) ─────────────
   # - name: 'python:3.12-slim'
   #   id: 'smoke-tests'
   #   waitFor: ['deploy']
@@ -179,19 +178,11 @@ steps:
   #         echo "Skipping smoke tests for branch: $BRANCH_NAME"
   #         exit 0
   #       fi
-
   #       pip install --quiet httpx
   #       python - <<'EOF'
   #       import httpx, time, sys, os
-
   #       base = os.environ["DOMAIN_NAME"]
-  #       if not base or "your-actual-static-ip" in base:
-  #           print("ERROR: _DOMAIN_NAME is still a placeholder.")
-  #           print("Pass the real IP: gcloud builds submit --substitutions=_DOMAIN_NAME=http://<ip>")
-  #           sys.exit(1)
-
   #       print(f"Running smoke test against {base}")
-
   #       for attempt in range(30):
   #           try:
   #               r = httpx.get(f"{base}/health", timeout=5)
@@ -202,7 +193,6 @@ steps:
   #           except Exception as e:
   #               print(f"  attempt {attempt+1}: {e}, retrying...")
   #           time.sleep(10)
-
   #       print("✗ Health check failed after 30 attempts")
   #       sys.exit(1)
   #       EOF
@@ -213,17 +203,9 @@ steps:
 
 substitutions:
   _REGION: us-central1
-
-  # ── Cluster config ────────────────────────────────────────────────────────
-  # Your cluster is ZONAL (us-central1-a), not regional.
-  # Confirm zone with: gcloud container clusters list
   _CLUSTER: ml-platform-cluster
-  _CLUSTER_ZONE: us-central1-a
-
-  # ── Smoke test target ─────────────────────────────────────────────────────
-  # Replace with your real static IP before deploying.
-  # Find it with: gcloud compute addresses list
-  # _DOMAIN_NAME: 'http://your-actual-static-ip'
+  _CLUSTER_ZONE: us-central1-a        # ZONAL cluster — confirm with: gcloud container clusters list
+  # _DOMAIN_NAME: 'http://your-static-ip'  # uncomment when enabling smoke tests
 
 options:
   logging: CLOUD_LOGGING_ONLY
