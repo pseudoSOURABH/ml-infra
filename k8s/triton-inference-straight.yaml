@@ -1,0 +1,17 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: clinical-assertion
+  namespace: triton
+  annotations:
+    serving.kserve.io/deploymentMode: "Serverless"
+spec:
+  predictor:
+    serviceAccountName: triton-sa
+    minReplicas: 1
+    maxReplicas: 3
+    model:
+      modelFormat:
+        name: triton
+      # runtime field removed – KServe will auto-select kserve-tritonserver
+      storageUri: "gs://project-e8b9570a-b660-4f1a-ae2-ml-models/clinical_assertion"

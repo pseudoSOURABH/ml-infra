@@ -1,71 +1,52 @@
 name: "clinical_assertion"
 platform: "onnxruntime_onnx"
-max_batch_size: 8  # Enable batching for throughput
+max_batch_size: 0
 
-# Input configuration
+# Input configuration: Full shape [Batch, Sequence]
 input [
   {
     name: "input_ids"
     data_type: TYPE_INT64
-    dims: [ -1 ]  # Variable sequence length
+    dims: [ -1, 512 ]
   },
   {
     name: "attention_mask"
     data_type: TYPE_INT64
-    dims: [ -1 ]
+    dims: [ -1, 512 ]
   },
   {
     name: "token_type_ids"
     data_type: TYPE_INT64
-    dims: [ -1 ]
+    dims: [ -1, 512 ]
   }
 ]
 
-# Output configuration
+# Output configuration: Full shape [Batch, Classes]
 output [
   {
     name: "logits"
     data_type: TYPE_FP32
-    dims: [ -1, 3 ]  # Batch size x 3 classes
+    dims: [ -1, 3 ]
   }
 ]
 
-# Instance group - optimize for CPU
+# CPU Optimizations (Safe for this model)
 instance_group [
   {
-    count: 2  # Multiple instances for parallelism
+    count: 2
     kind: KIND_CPU
   }
 ]
 
-# Dynamic batching for throughput
-dynamic_batching {
-  preferred_batch_size: [ 4, 8 ]
-  max_queue_delay_microseconds: 10000  # 10ms max wait
-}
+# You can re-enable dynamic batching *after* the model loads successfully.
+# dynamic_batching { ... }
 
-# Optimization settings
 optimization {
-  execution_accelerators {
-    cpu_accelerators {
-      name: "openvino"  # Optional: use if OpenVINO available
-    }
-  }
-  graph {
-    level: 2  # Graph optimization level
-  }
+  graph { level: 2 }
 }
 
-# Performance tuning
-parameters {
-  key: "cpu_threads"
-  value: { string_value: "4" }
-}
-parameters {
-  key: "inter_op_parallelism"
-  value: { string_value: "2" }
-}
-parameters {
-  key: "intra_op_parallelism"
-  value: { string_value: "2" }
-}
+parameters [
+  { key: "cpu_threads"          value: { string_value: "4" } },
+  { key: "inter_op_parallelism" value: { string_value: "2" } },
+  { key: "intra_op_parallelism" value: { string_value: "2" } }
+]
