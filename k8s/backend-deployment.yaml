@@ -17,7 +17,6 @@ spec:
       serviceAccountName: api-sa
       containers:
         - name: backend
-          # COMMIT_SHA is exported by cloudbuild deploy step and resolved by envsubst
           image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/ml-repo/clinical-backend:${COMMIT_SHA}
           imagePullPolicy: IfNotPresent
           ports:
@@ -26,7 +25,7 @@ spec:
               protocol: TCP
           env:
             - name: TRITON_URL
-              value: "clinical-triton-service.triton.svc.cluster.local:8001"
+              value: "clinical-assertion-predictor.triton.svc.cluster.local:9000"
             - name: MODEL_NAME
               value: "clinical_assertion"
           resources:
@@ -107,7 +106,7 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8080   # matches containerPort above
+      targetPort: 8080
       protocol: TCP
   sessionAffinity: None
 ---

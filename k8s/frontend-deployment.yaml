@@ -23,16 +23,15 @@ spec:
         tier: web
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8501"
+        prometheus.io/port: "8080"
     spec:
       serviceAccountName: api-sa
       containers:
         - name: frontend
-          # COMMIT_SHA is exported by cloudbuild deploy step and resolved by envsubst
           image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/ml-repo/clinical-frontend:${COMMIT_SHA}
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8501
+            - containerPort: 8080
               name: http
               protocol: TCP
           env:
@@ -119,10 +118,10 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: clinical-frontend   # matches deployment template labels
+    app: clinical-frontend
   ports:
     - name: http
       port: 80
-      targetPort: http       # named port resolves to 8501
+      targetPort: 8080
       protocol: TCP
   sessionAffinity: None
