@@ -73,7 +73,7 @@ spec:
                 timeoutSeconds: 5
           # Node selector for CPU-optimized pool
           nodeSelector:
-            cloud.google.com/gke-nodepool: cpu-app-pool
+            cloud.google.com/gke-nodepool: cpu-app-pool-v3
           # Service account with GCS access via Workload Identity
           serviceAccountName: triton-sa 
           # Autoscaling configuration (Knative)

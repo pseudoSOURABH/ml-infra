@@ -39,7 +39,7 @@ spec:
       
       # ⚠️ Pod customization goes INSIDE the triton block in v1beta1:
       nodeSelector:
-        cloud.google.com/gke-nodepool: cpu-app-pool
+        cloud.google.com/gke-nodepool: cpu-app-pool-v3
       
       # Container args must be specified here for v1beta1 Triton
       args:

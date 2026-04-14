@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Model Processing Pipeline: Convert -> Quantize -> Validate -> GCS upload.
+Now produces Triton‑compliant layout:
+    gs://<bucket>/<prefix>/<model_name>/<version>/model.onnx
+    gs://<bucket>/<prefix>/<model_name>/config.pbtxt
 """
 
 import os
@@ -21,8 +24,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
-    """Upload a local directory tree to GCS."""
+def upload_to_gcs(
+    local_dir: str,
+    gcs_uri: str,
+    project_id: str,
+    model_name: str,                # NEW: prepended to each blob path
+) -> None:
+    """
+    Upload local_dir contents to GCS, placing them under gcs_uri/model_name/.
+    """
     if not gcs_uri.startswith("gs://"):
         logger.warning(f"Skipping GCS upload — not a gs:// URI: {gcs_uri}")
         return
@@ -31,9 +41,12 @@ def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
 
     parts = gcs_uri.replace("gs://", "").split("/", 1)
     bucket_name = parts[0]
-    prefix = parts[1].rstrip("/") if len(parts) > 1 else ""
+    base_prefix = parts[1].rstrip("/") if len(parts) > 1 else ""
 
-    logger.info(f"Uploading {local_dir} -> gs://{bucket_name}/{prefix}")
+    # Build full prefix: base_prefix/model_name
+    full_prefix = f"{base_prefix}/{model_name}" if base_prefix else model_name
+
+    logger.info(f"Uploading {local_dir} -> gs://{bucket_name}/{full_prefix}")
     client = storage.Client(project=project_id)
     bucket = client.bucket(bucket_name)
 
@@ -42,7 +55,7 @@ def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
         if not file_path.is_file():
             continue
         rel = file_path.relative_to(local_dir)
-        blob_path = f"{prefix}/{rel}" if prefix else str(rel)
+        blob_path = f"{full_prefix}/{rel}"
         blob = bucket.blob(blob_path)
         for attempt in range(3):
             try:
@@ -56,19 +69,23 @@ def upload_to_gcs(local_dir: str, gcs_uri: str, project_id: str) -> None:
 
     logger.info(f"Uploaded {uploaded} files to GCS.")
 
-def _gcs_model_exists(gcs_uri: str, project_id: str, version: str = "1") -> bool:
+
+def _gcs_model_exists(gcs_uri: str, project_id: str, model_name: str, version: str) -> bool:
+    """Check if model already exists in GCS (under model_name/version/)."""
     try:
         from google.cloud import storage
         parts = gcs_uri.replace("gs://", "").split("/", 1)
         bucket_name = parts[0]
-        prefix = (parts[1].rstrip("/") if len(parts) > 1 else "") + f"/{version}/model.onnx"
+        base_prefix = parts[1].rstrip("/") if len(parts) > 1 else ""
+        full_prefix = f"{base_prefix}/{model_name}" if base_prefix else model_name
+        blob_path = f"{full_prefix}/{version}/model.onnx"
         client = storage.Client(project=project_id)
         bucket = client.bucket(bucket_name)
-        return bucket.blob(prefix).exists()
+        return bucket.blob(blob_path).exists()
     except Exception as e:
         logger.warning(f"GCS existence check failed ({e}) — running pipeline anyway.")
         return False
-        
+
 
 def run_pipeline(
     model_name: str,
@@ -78,23 +95,27 @@ def run_pipeline(
     accuracy_threshold: float = 0.95,
     skip_quantize: bool = False,
 ) -> bool:
-    VERSION = "2"                          # ← change version here only
+    VERSION = "2"      # Change version here only
 
     base = Path(output_dir)
     conv_dir = base / "temp_conversion"
     opt_dir  = base / "temp_optimized"
-    repo_dir = base / "model_repository" / "clinical_assertion"
-    ver_dir  = repo_dir / VERSION          # ← uses VERSION
+
+    # --- Triton repository layout (local) ---
+    # We build a folder named exactly 'model_name' containing version subdir and config.pbtxt
+    repo_root = base / "model_repository"          # temporary parent
+    model_dir = repo_root / model_name             # clinical_assertion/
+    ver_dir   = model_dir / VERSION                # clinical_assertion/2/
 
     if gcs_uri and gcs_uri.startswith("gs://"):
-        if _gcs_model_exists(gcs_uri, project_id, version=VERSION):  # ← passes VERSION
+        if _gcs_model_exists(gcs_uri, project_id, model_name, VERSION):
             logger.info("Model already present in GCS — skipping pipeline.")
             return True
+
     try:
         # ── 1. Export to ONNX ────────────────────────────────────────────────
         logger.info(f"=== Step 1: Converting {model_name} to ONNX ===")
         onnx_path = convert_model(model_name, str(conv_dir))
-
 
         # ── 2. Quantize ──────────────────────────────────────────────────────
         logger.info("=== Step 2: Quantizing for CPU ===")
@@ -104,20 +125,18 @@ def run_pipeline(
             quantize=not skip_quantize,
         )
 
-        # FIX: Copy HF metadata so the validation step (optimum) can load the model
+        # Copy HF metadata to opt_dir so validation can load tokenizer
         metadata_files = [
-            "config.json", 
-            "vocab.txt", 
-            "tokenizer.json", 
-            "tokenizer_config.json", 
-            "special_tokens_map.json"
+            "config.json",
+            "vocab.txt",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
         ]
         for filename in metadata_files:
             src_file = conv_dir / filename
             if src_file.exists():
                 shutil.copy2(str(src_file), str(opt_dir / filename))
-            else:
-                logger.debug(f"Optional metadata file {filename} not found in {conv_dir}")
 
         # ── 3. Validate ──────────────────────────────────────────────────────
         logger.info("=== Step 3: Validating model ===")
@@ -128,8 +147,11 @@ def run_pipeline(
         # ── 4. Assemble Triton repo ──────────────────────────────────────────
         logger.info("=== Step 4: Assembling Triton model repository ===")
         ver_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy ONNX model
         shutil.copy2(str(final_model), str(ver_dir / "model.onnx"))
 
+        # Copy tokenizer metadata (helpful for debugging)
         for fname in [
             "tokenizer.json",
             "tokenizer_config.json",
@@ -140,10 +162,10 @@ def run_pipeline(
             if src.exists():
                 shutil.copy2(str(src), str(ver_dir / fname))
 
-        # Pick config.pbtxt from model_repository/clinical_assertion/ at repo roott
+        # Copy config.pbtxt to model root (model_dir)
         config_src = Path(__file__).parent / "config.pbtxt"
         if config_src.exists():
-            shutil.copy2(str(config_src), str(repo_dir / "config.pbtxt"))
+            shutil.copy2(str(config_src), str(model_dir / "config.pbtxt"))
             logger.info(f"Copied config.pbtxt from {config_src}")
         else:
             raise FileNotFoundError(
@@ -153,7 +175,8 @@ def run_pipeline(
         # ── 5. Upload ────────────────────────────────────────────────────────
         if gcs_uri:
             logger.info("=== Step 5: Uploading to GCS ===")
-            upload_to_gcs(str(repo_dir), gcs_uri, project_id)
+            # Upload the entire model_dir (clinical_assertion/) as a subdirectory
+            upload_to_gcs(str(model_dir), gcs_uri, project_id, model_name)
 
         logger.info("✓ Pipeline completed successfully.")
         return True
@@ -165,15 +188,16 @@ def run_pipeline(
     finally:
         shutil.rmtree(str(conv_dir), ignore_errors=True)
         shutil.rmtree(str(opt_dir), ignore_errors=True)
+        shutil.rmtree(str(repo_root), ignore_errors=True)
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model",        required=True)
+    parser.add_argument("--model",        required=True, help="HuggingFace model name")
     parser.add_argument("--output",       default="./output")
-    parser.add_argument("--gcs-uri",      default="")
+    parser.add_argument("--gcs-uri",      default="", help="Base GCS path, e.g. gs://bucket/clinical_assertion")
     parser.add_argument("--project-id",   default="")
     parser.add_argument("--threshold",    type=float, default=0.95)
     parser.add_argument("--skip-quantize", action="store_true")
