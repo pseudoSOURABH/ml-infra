@@ -77,7 +77,7 @@ print('✓ Token shapes:', {k: v.shape for k, v in tokens.items()})"
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3  \
     CMD python -c "\
 import urllib.request, sys; \
 r = urllib.request.urlopen('http://localhost:8080/health', timeout=4); \
