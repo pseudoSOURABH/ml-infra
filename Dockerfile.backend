@@ -10,25 +10,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY backend/requirements.txt .
 
-# Show exactly what gets installed — visible in build logs for debugging
 RUN pip install --user --no-cache-dir -r requirements.txt \
     && pip show transformers numpy | grep -E "^(Name|Version):"
 
-# ── Stage 2: Download tokenizer into image at build time ──────────────────────
-# Done in builder so the ~250MB download doesn't bloat the runtime layer diff
-# and benefits from Docker layer caching between code-only changes
+# ── Stage 2: Download and save tokenizer locally ──────────────────────────────
 FROM python:3.12-slim AS tokenizer-cache
 
 COPY --from=builder /root/.local /root/.local
 ENV PATH="/root/.local/bin:$PATH"
 
-# Bake tokenizer files into image — eliminates network dependency at pod startup
-# HF_HOME controls where files land so we can COPY them precisely
-ENV HF_HOME=/tokenizer_cache
-RUN python -c "\
+# Save the complete tokenizer (config, vocab, tokenizer.json, etc.) to /app/tokenizer
+RUN mkdir -p /app/tokenizer && \
+    python -c "\
 from transformers import AutoTokenizer; \
-t = AutoTokenizer.from_pretrained('bvanaken/clinical-assertion-negation-bert'); \
-print('Tokenizer files saved to:', t.name_or_path)"
+tokenizer = AutoTokenizer.from_pretrained('bvanaken/clinical-assertion-negation-bert'); \
+tokenizer.save_pretrained('/app/tokenizer'); \
+print('Tokenizer saved to /app/tokenizer')"
 
 # ── Stage 3: Runtime image ────────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -42,40 +39,40 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /root/.local /home/appuser/.local
 
-# Copy pre-downloaded tokenizer cache
-COPY --from=tokenizer-cache /tokenizer_cache /home/appuser/.cache/huggingface
+# Copy the pre-saved tokenizer directory
+COPY --from=tokenizer-cache /app/tokenizer /app/tokenizer
 
 # Runtime environment config
-# - Disable pyc files
-# - Ensure logs are flushed
-# - Use baked HF cache (offline)
 ENV PATH="/home/appuser/.local/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app:/app/backend" \
     HF_HOME="/home/appuser/.cache/huggingface" \
     HF_HUB_DISABLE_TELEMETRY=1 \
-    TOKENIZERS_PARALLELISM=false
+    TOKENIZERS_PARALLELISM=false \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1
 
 COPY backend/ ./backend/
 
-RUN chown -R appuser:appuser /app /home/appuser/.local /home/appuser/.cache
+RUN chown -R appuser:appuser /app /home/appuser/.local /app/tokenizer
 
 USER appuser
 
-# Verify all critical imports resolve AND tokenizer loads from cache (no network)
+# Verify tokenizer loads from local directory (offline)
 RUN python -c "\
 import os; \
 os.environ['TRANSFORMERS_OFFLINE'] = '1'; \
+os.environ['HF_HUB_OFFLINE'] = '1'; \
 from transformers import AutoTokenizer; \
 import numpy as np; \
 import tritonclient.grpc as grpcclient; \
 from backend.main import app; \
-t = AutoTokenizer.from_pretrained('bvanaken/clinical-assertion-negation-bert'); \
-tokens = t('test sentence', return_tensors='np'); \
+tokenizer = AutoTokenizer.from_pretrained('/app/tokenizer'); \
+tokens = tokenizer('test sentence', return_tensors='np'); \
 assert 'input_ids' in tokens, 'Tokenizer output missing input_ids'; \
 print('✓ All imports OK'); \
-print('✓ Tokenizer loads offline from cache'); \
+print('✓ Tokenizer loads offline from /app/tokenizer'); \
 print('✓ Token shapes:', {k: v.shape for k, v in tokens.items()})"
 
 EXPOSE 8080

@@ -45,9 +45,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting up...")
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        "bvanaken/clinical-assertion-negation-bert"
-    )
+    tokenizer = tokenizer = AutoTokenizer.from_pretrained("/app/tokenizer")
     logger.info("Tokenizer loaded")
 
     triton_client = TritonClient(
