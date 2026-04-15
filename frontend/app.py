@@ -17,7 +17,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend.api.svc.cluster.local:808
 TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 
 app = FastAPI(title="Clinical Assertion UI", version="1.0.0")
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="frontend/templates")
 
 
 @app.get("/", response_class=HTMLResponse)
