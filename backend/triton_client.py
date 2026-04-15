@@ -9,7 +9,6 @@ from tritonclient.utils import np_to_triton_dtype
 
 logger = logging.getLogger(__name__)
 
-# Label mapping
 LABELS = ["PRESENT", "ABSENT", "POSSIBLE"]
 
 
@@ -42,8 +41,13 @@ class TritonClient:
                     url=self.triton_url,
                     verbose=False
                 )
-                # Test connection
-                if await asyncio.to_thread(client.is_server_live, timeout=self.timeout):
+                # FIX: is_server_live() does NOT accept timeout keyword
+                try:
+                    live = await asyncio.to_thread(client.is_server_live)
+                except Exception as e:
+                    logger.warning(f"Connection test failed: {e}")
+                    continue
+                if live:
                     self._client_pool.append(client)
                     logger.debug(f"Connected to Triton: {self.triton_url}")
             
@@ -65,7 +69,6 @@ class TritonClient:
                 client = self._client_pool.pop()
         
         if client is None:
-            # Create temporary client if pool exhausted
             logger.warning("Connection pool exhausted, creating temporary connection")
             client = grpcclient.InferenceServerClient(url=self.triton_url)
             temp_client = True
@@ -75,7 +78,6 @@ class TritonClient:
         try:
             yield client
         finally:
-            # Return to pool or close
             async with self._pool_lock:
                 if temp_client:
                     await asyncio.to_thread(client.close)
@@ -86,10 +88,10 @@ class TritonClient:
         """Check if model is ready for inference."""
         async with self.get_client() as client:
             try:
+                # FIX: is_model_ready() does NOT accept timeout keyword
                 return await asyncio.to_thread(
                     client.is_model_ready,
-                    model_name=self.model_name,
-                    timeout=self.timeout
+                    self.model_name
                 )
             except Exception as e:
                 logger.error(f"Model readiness check failed: {e}")
@@ -116,43 +118,28 @@ class TritonClient:
     ) -> Dict[str, Any]:
         """
         Run inference on Triton.
-        
-        Args:
-            tokens: Tokenizer output dict with input_ids, attention_mask, etc.
-            request_id: Optional request identifier for tracing
-            
-        Returns:
-            Dict with label and score
         """
         start_time = time.time()
         
         async with self.get_client() as client:
             inputs = self._prepare_inputs(tokens)
-            
-            # Request output
             outputs = [grpcclient.InferRequestedOutput("logits")]
             
-            # Run inference
             response = await asyncio.to_thread(
                 client.infer,
                 model_name=self.model_name,
                 inputs=inputs,
                 outputs=outputs,
                 request_id=request_id,
-                timeout=self.timeout
+                timeout=self.timeout  # infer() DOES accept timeout
             )
             
-            # Parse response
-            logits = response.as_numpy("logits")[0]  # Shape: [3]
-            logits_stable = logits - np.max(logits)
-            probabilities = np.exp(logits_stable) / np.sum(np.exp(logits_stable))
+            logits = response.as_numpy("logits")[0]
             probabilities = np.exp(logits) / np.sum(np.exp(logits))
-            
             pred_idx = int(np.argmax(probabilities))
             label = LABELS[pred_idx]
             score = float(probabilities[pred_idx])
             
-            # Map POSSIBLE -> CONDITIONAL for API consistency
             if label == "POSSIBLE":
                 label = "CONDITIONAL"
             
@@ -184,9 +171,8 @@ class TritonClient:
                 timeout=self.timeout
             )
             
-            logits_batch = response.as_numpy("logits")  # Shape: [batch, 3]
+            logits_batch = response.as_numpy("logits")
             results = []
-            
             for logits in logits_batch:
                 probs = np.exp(logits) / np.sum(np.exp(logits))
                 idx = int(np.argmax(probs))
@@ -197,7 +183,6 @@ class TritonClient:
                     "label": label,
                     "score": round(float(probs[idx]), 4)
                 })
-            
             return results
     
     async def close(self):

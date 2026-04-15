@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting up...")
 
-    tokenizer = tokenizer = AutoTokenizer.from_pretrained("/app/tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained("/app/tokenizer")
     logger.info("Tokenizer loaded")
 
     triton_client = TritonClient(
