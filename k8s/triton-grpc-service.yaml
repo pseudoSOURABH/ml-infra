@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-assertion-grpc
+  namespace: triton
+  labels:
+    app: clinical-assertion
+spec:
+  type: ClusterIP
+  selector:
+    serving.kserve.io/inferenceservice: clinical-assertion
+  ports:
+    - name: grpc
+      port: 9000
+      targetPort: 9000
+      protocol: TCP

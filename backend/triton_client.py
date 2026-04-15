@@ -97,20 +97,22 @@ class TritonClient:
                 logger.error(f"Model readiness check failed: {e}")
                 return False
     
-    def _prepare_inputs(self, tokens: Dict[str, np.ndarray]) -> List[grpcclient.InferInput]:
+        def _prepare_inputs(self, tokens: Dict[str, np.ndarray]) -> List[grpcclient.InferInput]:
         """Convert tokenizer output to Triton inputs."""
         inputs = []
         for name, data in tokens.items():
             if name in ["input_ids", "attention_mask", "token_type_ids"]:
+                # Ensure shape is a tuple of Python ints
+                shape = tuple(int(dim) for dim in data.shape)
                 infer_input = grpcclient.InferInput(
                     name,
-                    data.shape,
+                    shape,
                     np_to_triton_dtype(data.dtype)
                 )
                 infer_input.set_data_from_numpy(data)
                 inputs.append(infer_input)
         return inputs
-    
+
     async def predict(
         self,
         tokens: Dict[str, np.ndarray],
@@ -120,57 +122,59 @@ class TritonClient:
         Run inference on Triton.
         """
         start_time = time.time()
-        
+        timeout_int = int(self.timeout)   # fix: ensure integer
+
         async with self.get_client() as client:
             inputs = self._prepare_inputs(tokens)
             outputs = [grpcclient.InferRequestedOutput("logits")]
-            
+
             response = await asyncio.to_thread(
                 client.infer,
                 model_name=self.model_name,
                 inputs=inputs,
                 outputs=outputs,
                 request_id=request_id,
-                timeout=self.timeout  # infer() DOES accept timeout
+                timeout=timeout_int
             )
-            
+
             logits = response.as_numpy("logits")[0]
             probabilities = np.exp(logits) / np.sum(np.exp(logits))
             pred_idx = int(np.argmax(probabilities))
             label = LABELS[pred_idx]
             score = float(probabilities[pred_idx])
-            
+
             if label == "POSSIBLE":
                 label = "CONDITIONAL"
-            
+
             elapsed_ms = (time.time() - start_time) * 1000
             logger.debug(f"Inference completed in {elapsed_ms:.2f}ms")
-            
+
             return {
                 "label": label,
                 "score": round(score, 4),
                 "latency_ms": round(elapsed_ms, 2)
             }
-    
+
     async def predict_batch(
         self,
         tokenized_batch: Dict[str, np.ndarray],
         request_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Run batch inference."""
+        timeout_int = int(self.timeout)
         async with self.get_client() as client:
             inputs = self._prepare_inputs(tokenized_batch)
             outputs = [grpcclient.InferRequestedOutput("logits")]
-            
+
             response = await asyncio.to_thread(
                 client.infer,
                 model_name=self.model_name,
                 inputs=inputs,
                 outputs=outputs,
                 request_id=request_id,
-                timeout=self.timeout
+                timeout=timeout_int
             )
-            
+
             logits_batch = response.as_numpy("logits")
             results = []
             for logits in logits_batch:
