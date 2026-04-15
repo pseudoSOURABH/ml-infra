@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Model Processing Pipeline: Convert -> Quantize -> Validate -> GCS upload.
-Now produces Triton‑compliant layout:
-    gs://<bucket>/<prefix>/<model_name>/<version>/model.onnx
-    gs://<bucket>/<prefix>/<model_name>/config.pbtxt
+Produces Triton‑compliant layout:
+    gs://<bucket>/<prefix>/clinical_assertion/<version>/model.onnx
+    gs://<bucket>/<prefix>/clinical_assertion/config.pbtxt
 """
 
 import os
@@ -23,15 +23,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- TRITON TARGET MODEL NAME (fixed, not derived from HF model ID) ---
+TRITON_MODEL_NAME = "clinical_assertion"
+VERSION = "2"                           # Change version here only
+
 
 def upload_to_gcs(
     local_dir: str,
     gcs_uri: str,
     project_id: str,
-    model_name: str,                # NEW: prepended to each blob path
 ) -> None:
     """
-    Upload local_dir contents to GCS, placing them under gcs_uri/model_name/.
+    Upload local_dir contents to GCS under gcs_uri/TRITON_MODEL_NAME/.
     """
     if not gcs_uri.startswith("gs://"):
         logger.warning(f"Skipping GCS upload — not a gs:// URI: {gcs_uri}")
@@ -43,8 +46,8 @@ def upload_to_gcs(
     bucket_name = parts[0]
     base_prefix = parts[1].rstrip("/") if len(parts) > 1 else ""
 
-    # Build full prefix: base_prefix/model_name
-    full_prefix = f"{base_prefix}/{model_name}" if base_prefix else model_name
+    # The final prefix: base_prefix / TRITON_MODEL_NAME
+    full_prefix = f"{base_prefix}/{TRITON_MODEL_NAME}" if base_prefix else TRITON_MODEL_NAME
 
     logger.info(f"Uploading {local_dir} -> gs://{bucket_name}/{full_prefix}")
     client = storage.Client(project=project_id)
@@ -70,15 +73,15 @@ def upload_to_gcs(
     logger.info(f"Uploaded {uploaded} files to GCS.")
 
 
-def _gcs_model_exists(gcs_uri: str, project_id: str, model_name: str, version: str) -> bool:
-    """Check if model already exists in GCS (under model_name/version/)."""
+def _gcs_model_exists(gcs_uri: str, project_id: str) -> bool:
+    """Check if model already exists in GCS (under TRITON_MODEL_NAME/VERSION/)."""
     try:
         from google.cloud import storage
         parts = gcs_uri.replace("gs://", "").split("/", 1)
         bucket_name = parts[0]
         base_prefix = parts[1].rstrip("/") if len(parts) > 1 else ""
-        full_prefix = f"{base_prefix}/{model_name}" if base_prefix else model_name
-        blob_path = f"{full_prefix}/{version}/model.onnx"
+        full_prefix = f"{base_prefix}/{TRITON_MODEL_NAME}" if base_prefix else TRITON_MODEL_NAME
+        blob_path = f"{full_prefix}/{VERSION}/model.onnx"
         client = storage.Client(project=project_id)
         bucket = client.bucket(bucket_name)
         return bucket.blob(blob_path).exists()
@@ -88,34 +91,31 @@ def _gcs_model_exists(gcs_uri: str, project_id: str, model_name: str, version: s
 
 
 def run_pipeline(
-    model_name: str,
+    hf_model_name: str,                     # Full HF model ID for conversion
     output_dir: str,
     gcs_uri: str,
     project_id: str,
     accuracy_threshold: float = 0.95,
     skip_quantize: bool = False,
 ) -> bool:
-    VERSION = "2"      # Change version here only
-
     base = Path(output_dir)
     conv_dir = base / "temp_conversion"
     opt_dir  = base / "temp_optimized"
 
     # --- Triton repository layout (local) ---
-    # We build a folder named exactly 'model_name' containing version subdir and config.pbtxt
-    repo_root = base / "model_repository"          # temporary parent
-    model_dir = repo_root / model_name             # clinical_assertion/
+    repo_root = base / "model_repository"
+    model_dir = repo_root / TRITON_MODEL_NAME      # clinical_assertion/
     ver_dir   = model_dir / VERSION                # clinical_assertion/2/
 
     if gcs_uri and gcs_uri.startswith("gs://"):
-        if _gcs_model_exists(gcs_uri, project_id, model_name, VERSION):
+        if _gcs_model_exists(gcs_uri, project_id):
             logger.info("Model already present in GCS — skipping pipeline.")
             return True
 
     try:
         # ── 1. Export to ONNX ────────────────────────────────────────────────
-        logger.info(f"=== Step 1: Converting {model_name} to ONNX ===")
-        onnx_path = convert_model(model_name, str(conv_dir))
+        logger.info(f"=== Step 1: Converting {hf_model_name} to ONNX ===")
+        onnx_path = convert_model(hf_model_name, str(conv_dir))
 
         # ── 2. Quantize ──────────────────────────────────────────────────────
         logger.info("=== Step 2: Quantizing for CPU ===")
@@ -176,7 +176,7 @@ def run_pipeline(
         if gcs_uri:
             logger.info("=== Step 5: Uploading to GCS ===")
             # Upload the entire model_dir (clinical_assertion/) as a subdirectory
-            upload_to_gcs(str(model_dir), gcs_uri, project_id, model_name)
+            upload_to_gcs(str(model_dir), gcs_uri, project_id)
 
         logger.info("✓ Pipeline completed successfully.")
         return True
@@ -209,7 +209,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     ok = run_pipeline(
-        args.model,
+        args.model,          # HF model ID
         args.output,
         args.gcs_uri,
         pid,
