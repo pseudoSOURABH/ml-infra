@@ -19,7 +19,7 @@ FROM python:3.12-slim AS tokenizer-cache
 COPY --from=builder /root/.local /root/.local
 ENV PATH="/root/.local/bin:$PATH"
 
-# Save the complete tokenizer (config, vocab, tokenizer.json, etc.) to /app/tokenizer
+# Save the complete tokenizer (config, vocab, tokenizer.json, etc.) to /app/tokenizerr
 RUN mkdir -p /app/tokenizer && \
     python -c "\
 from transformers import AutoTokenizer; \
