@@ -13,82 +13,63 @@ LABELS = ["PRESENT", "ABSENT", "POSSIBLE"]
 
 
 class TritonClient:
-    """Async gRPC client for Triton Inference Server with connection pooling."""
+    """
+    Async gRPC client for Triton Inference Server.
+    Uses a single persistent channel – HTTP/2 multiplexing handles concurrency.
+    """
 
     def __init__(
         self,
         triton_url: str,
         model_name: str = "clinical_assertion",
-        max_connections: int = 10,
         timeout: float = 30.0
     ):
         self.triton_url = triton_url
         self.model_name = model_name
-        self.max_connections = max_connections
         self.timeout = timeout
-        self._client_pool: List[grpcclient.InferenceServerClient] = []
-        self._pool_lock = asyncio.Lock()
+        self._client: Optional[grpcclient.InferenceServerClient] = None
         self._initialized = False
 
     async def initialize(self):
-        """Initialize connection pool."""
+        """
+        Create a single persistent gRPC client and verify connectivity.
+        All subsequent requests reuse this channel.
+        """
         if self._initialized:
             return
 
-        async with self._pool_lock:
-            for _ in range(self.max_connections):
-                client = grpcclient.InferenceServerClient(
-                    url=self.triton_url,
-                    verbose=False
-                )
-                # is_server_live() does NOT accept timeout keyword
-                try:
-                    live = await asyncio.to_thread(client.is_server_live)
-                except Exception as e:
-                    logger.warning(f"Connection test failed: {e}")
-                    continue
-                if live:
-                    self._client_pool.append(client)
-                    logger.debug(f"Connected to Triton: {self.triton_url}")
+        # Create the client – this establishes the HTTP/2 connection once.
+        self._client = grpcclient.InferenceServerClient(
+            url=self.triton_url,
+            verbose=False
+        )
 
-            if not self._client_pool:
-                raise ConnectionError(f"Failed to connect to Triton at {self.triton_url}")
+        # Verify the server is live (no timeout keyword needed).
+        try:
+            live = await asyncio.to_thread(self._client.is_server_live)
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Triton at {self.triton_url}: {e}")
 
-            self._initialized = True
-            logger.info(f"Triton client initialized with {len(self._client_pool)} connections")
+        if not live:
+            raise ConnectionError(f"Triton server at {self.triton_url} is not live")
+
+        self._initialized = True
+        logger.info("Triton client initialized (single persistent channel)")
 
     @asynccontextmanager
     async def get_client(self):
-        """Get a client from the pool (context manager)."""
+        """
+        Provide the single client instance.
+        No pool – just return the already established channel.
+        """
         if not self._initialized:
             await self.initialize()
-
-        client = None
-        async with self._pool_lock:
-            if self._client_pool:
-                client = self._client_pool.pop()
-
-        if client is None:
-            logger.warning("Connection pool exhausted, creating temporary connection")
-            client = grpcclient.InferenceServerClient(url=self.triton_url)
-            temp_client = True
-        else:
-            temp_client = False
-
-        try:
-            yield client
-        finally:
-            async with self._pool_lock:
-                if temp_client:
-                    await asyncio.to_thread(client.close)
-                else:
-                    self._client_pool.append(client)
+        yield self._client
 
     async def is_model_ready(self) -> bool:
-        """Check if model is ready for inference."""
+        """Check if the model is ready for inference."""
         async with self.get_client() as client:
             try:
-                # is_model_ready() does NOT accept timeout keyword
                 return await asyncio.to_thread(
                     client.is_model_ready,
                     self.model_name
@@ -97,19 +78,20 @@ class TritonClient:
                 logger.error(f"Model readiness check failed: {e}")
                 return False
 
-   
-
     def _prepare_inputs(self, tokens: Dict[str, np.ndarray]) -> List[grpcclient.InferInput]:
-        """Convert tokenizer output to Triton inputs."""
+        """
+        Convert tokenizer output to Triton inputs.
+        - Forces INT64 dtype.
+        - Flattens the data (ravel) for robust serialisation.
+        """
         inputs = []
         for name, data in tokens.items():
             if name in ["input_ids", "attention_mask", "token_type_ids"]:
-                # Force INT64 dtype (Triton expects exactly this)
+                # Ensure correct dtype and memory layout
                 data = data.astype(np.int64)
-                # Ensure shape is a tuple of Python ints (no np.int64)
                 shape = tuple(int(dim) for dim in data.shape)
                 infer_input = grpcclient.InferInput(name, shape, "INT64")
-                infer_input.set_data_from_numpy(data)
+                infer_input.set_data_from_numpy(data.ravel())   # flatten
                 inputs.append(infer_input)
         return inputs
 
@@ -118,9 +100,9 @@ class TritonClient:
         tokens: Dict[str, np.ndarray],
         request_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Run inference on Triton."""
+        """Run inference on Triton (single request)."""
         start_time = time.time()
-        timeout_int = int(self.timeout)   # fix: ensure integer
+        timeout_int = int(self.timeout)   # ensure integer
 
         async with self.get_client() as client:
             inputs = self._prepare_inputs(tokens)
@@ -141,6 +123,7 @@ class TritonClient:
             label = LABELS[pred_idx]
             score = float(probabilities[pred_idx])
 
+            # Map internal label to API response label
             if label == "POSSIBLE":
                 label = "CONDITIONAL"
 
@@ -188,9 +171,8 @@ class TritonClient:
             return results
 
     async def close(self):
-        """Close all connections."""
-        async with self._pool_lock:
-            for client in self._client_pool:
-                await asyncio.to_thread(client.close)
-            self._client_pool.clear()
+        """Close the persistent gRPC channel."""
+        if self._client:
+            await asyncio.to_thread(self._client.close)
+            self._client = None
             self._initialized = False
