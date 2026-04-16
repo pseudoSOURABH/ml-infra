@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TRITON_URL = os.getenv("TRITON_URL", "triton-inference.triton.svc.cluster.local:8001")
+TRITON_URL = os.getenv("TRITON_URL", "clinical-assertion-grpc.triton.svc.cluster.local:8001")
 MODEL_NAME = os.getenv("MODEL_NAME", "clinical_assertion")
 MAX_SEQ_LENGTH = int(os.getenv("MAX_SEQ_LENGTH", "512"))
 BATCH_SIZE_LIMIT = int(os.getenv("BATCH_SIZE_LIMIT", "32"))

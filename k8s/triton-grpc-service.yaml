@@ -11,6 +11,6 @@ spec:
     serving.kserve.io/inferenceservice: clinical-assertion
   ports:
     - name: grpc
-      port: 9000
-      targetPort: 9000
+      port: 8001
+      targetPort: 8001
       protocol: TCP

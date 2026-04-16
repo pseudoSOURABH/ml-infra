@@ -205,7 +205,7 @@ steps:
         kubectl apply -f k8s/namespaces.yaml
 
         # 2. Deploy KServe InferenceService for Triton
-        envsubst < k8s/triton-inference.yaml | kubectl apply -f -
+        envsubst < k8s/triton-inference-straight.yaml | kubectl apply -f -
 
         # 3. Create the dedicated gRPC service (stable endpoint)
         kubectl apply -f k8s/triton-grpc-service.yaml
@@ -229,8 +229,8 @@ steps:
         kubectl apply -f k8s/grafana-loadbalancer.yaml       # set grafana as loadbalancer svc
 
         # 8. Wait for deployments to roll out
-        kubectl rollout status deployment/clinical-backend  -n api      --timeout=300s
-        kubectl rollout status deployment/clinical-frontend -n frontend  --timeout=300s
+        kubectl rollout status deployment/clinical-backend  -n api      --timeout=600s
+        kubectl rollout status deployment/clinical-frontend -n frontend  --timeout=600s
 
         echo "Deployment complete!"
     env:
