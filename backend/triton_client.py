@@ -19,7 +19,7 @@ class TritonClient:
         self,
         triton_url: str,
         model_name: str = "clinical_assertion",
-        max_connections: int = 4,
+        max_connections: int = 10,
         timeout: float = 30.0
     ):
         self.triton_url = triton_url

@@ -226,6 +226,7 @@ steps:
         kubectl apply -f k8s/triton-metrics-server.yaml      # Exposes Triton port 8002
         kubectl apply -f k8s/triton-servicemonitor.yaml      # Scrapes Triton metrics
         kubectl apply -f k8s/backend-servicemonitor.yaml     # Scrapes FastAPI metrics
+        kubectl apply -f k8s/grafana-loadbalancer.yaml       # set grafana as loadbalancer svc
 
         # 8. Wait for deployments to roll out
         kubectl rollout status deployment/clinical-backend  -n api      --timeout=300s
