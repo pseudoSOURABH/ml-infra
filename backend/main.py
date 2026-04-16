@@ -116,34 +116,31 @@ async def predict(request: PredictRequest):
     if not triton_client or not await triton_client.is_model_ready():
         raise HTTPException(status_code=503, detail="Model not ready")
 
-    start_time = time.time()
+    t0 = time.time()
 
-    try:
-        tokens = tokenizer(
-            request.sentence,
-            return_tensors="np",
-            truncation=True,
-            max_length=MAX_SEQ_LENGTH,
-            padding="max_length"
-        )
+    # Tokenization
+    t_tok_start = time.time()
+    tokens = tokenizer(
+        request.sentence,
+        return_tensors="np",
+        truncation=True,
+        max_length=MAX_SEQ_LENGTH,
+        padding="max_length"
+    )
+    t_tok = (time.time() - t_tok_start) * 1000
 
-        result = await triton_client.predict(
-            tokens,
-            request_id=f"req-{int(time.time() * 1000)}"
-        )
+    # Triton inference
+    t_triton_start = time.time()
+    result = await triton_client.predict(
+        tokens,
+        request_id=f"req-{int(time.time() * 1000)}"
+    )
+    t_triton = (time.time() - t_triton_start) * 1000
 
-        latency_ms = (time.time() - start_time) * 1000
-        if latency_ms > 100:
-            logger.warning(
-                f"Slow inference: {latency_ms:.2f}ms for "
-                f"'{request.sentence[:50]}...'"
-            )
+    total = (time.time() - t0) * 1000
+    logger.info(f"Tokenization: {t_tok:.2f}ms, Triton gRPC: {t_triton:.2f}ms, Total: {total:.2f}ms")
 
-        return PredictResponse(label=result["label"], score=result["score"])
-
-    except Exception as e:
-        logger.error(f"Prediction failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return PredictResponse(label=result["label"], score=result["score"])
 
 
 @app.post("/predict/batch", response_model=BatchPredictResponse, tags=["Inference"])
