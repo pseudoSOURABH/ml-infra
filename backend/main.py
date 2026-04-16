@@ -51,8 +51,8 @@ async def lifespan(app: FastAPI):
 
     triton_client = TritonClient(
         triton_url=TRITON_URL,
-        model_name=MODEL_NAME,
-        max_connections=4
+        model_name=MODEL_NAME
+        # max_connections=4
     )
     await triton_client.initialize()
 
@@ -138,7 +138,7 @@ async def predict(request: PredictRequest):
     t_triton = (time.time() - t_triton_start) * 1000
 
     total = (time.time() - t0) * 1000
-    logger.info(f"Tokenization: {t_tok:.2f}ms, Triton gRPC: {t_triton:.2f}ms, Total: {total:.2f}ms")
+    logger.info(f"Tokenization: {t_tok:.2f}ms, Triton HTTP: {t_triton:.2f}ms, Total: {total:.2f}ms")
 
     return PredictResponse(label=result["label"], score=result["score"])
 

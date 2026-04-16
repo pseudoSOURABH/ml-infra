@@ -169,6 +169,7 @@ steps:
         kubectl apply -f k8s/triton-servicemonitor.yaml
         kubectl apply -f k8s/backend-servicemonitor.yaml
         kubectl apply -f k8s/grafana-loadbalancer.yaml
+        kubectl apply -f k8s/triton-http-service.yaml
 
         # 8. Wait for deployments to roll out
         kubectl rollout status deployment/clinical-backend  -n api      --timeout=300s
