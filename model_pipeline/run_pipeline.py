@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # --- TRITON TARGET MODEL NAME (fixed, not derived from HF model ID) ---
 TRITON_MODEL_NAME = "clinical_assertion"
-VERSION = "2"                           # Change version here only
+VERSION = "3"                           # Change version here only
 
 
 def upload_to_gcs(
