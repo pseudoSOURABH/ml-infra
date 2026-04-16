@@ -4,7 +4,7 @@ metadata:
   name: clinical-assertion
   namespace: triton
   annotations:
-    serving.kserve.io/deploymentMode: "Serverless"
+    serving.kserve.io/deploymentMode: "RawDeployment"
 spec:
   predictor:
     serviceAccountName: triton-sa
@@ -13,5 +13,4 @@ spec:
     model:
       modelFormat:
         name: triton
-      # runtime field removed – KServe will auto-select kserve-tritonserver
       storageUri: "gs://project-e8b9570a-b660-4f1a-ae2-ml-models/clinical_assertion"
