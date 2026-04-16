@@ -41,6 +41,10 @@ instance_group [
 # You can re-enable dynamic batching *after* the model loads successfully.
 # dynamic_batching { ... }
 
+dynamic_batching {
+  max_queue_delay_microseconds: 0
+}
+
 optimization {
   graph { level: 2 }
 }
