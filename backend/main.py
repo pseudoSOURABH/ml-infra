@@ -51,8 +51,8 @@ async def lifespan(app: FastAPI):
 
     triton_client = TritonClient(
         triton_url=TRITON_URL,
-        model_name=MODEL_NAME,
-        max_connections=4
+        model_name=MODEL_NAME
+       
     )
     await triton_client.initialize()
 
