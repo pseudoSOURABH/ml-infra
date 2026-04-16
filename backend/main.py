@@ -2,6 +2,7 @@
 #!/usr/bin/env python3
 """FastAPI backend service for clinical assertion inference."""
 
+from prometheus_fastapi_instrumentator import Instrumentator
 import os
 import logging
 import time
@@ -79,6 +80,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 app.add_middleware(
     CORSMiddleware,

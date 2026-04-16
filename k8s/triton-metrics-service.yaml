@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-assertion-metrics
+  namespace: triton
+  labels:
+    app: clinical-assertion
+    component: metrics
+spec:
+  selector:
+    serving.kserve.io/inferenceservice: clinical-assertion
+  ports:
+    - name: metrics
+      port: 8002
+      targetPort: 8002

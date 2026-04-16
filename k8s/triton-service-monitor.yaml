@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: triton-metrics
+  namespace: triton
+  labels:
+    release: prometheus-stack  # must match your Prometheus release label
+spec:
+  selector:
+    matchLabels:
+      app: clinical-assertion
+      component: metrics
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+  namespaceSelector:
+    matchNames:
+      - triton
