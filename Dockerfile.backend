@@ -53,6 +53,8 @@ ENV PATH="/home/appuser/.local/bin:$PATH" \
     TRANSFORMERS_OFFLINE=1 \
     HF_HUB_OFFLINE=1
 
+ARG CACHEBUST=1
+
 COPY backend/ ./backend/
 
 RUN chown -R appuser:appuser /app /home/appuser/.local /app/tokenizer
