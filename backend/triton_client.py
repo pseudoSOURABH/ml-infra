@@ -28,7 +28,7 @@ class TritonClient:
         self,
         triton_url: str,
         model_name: str = "clinical_assertion",
-        timeout: float = 30.0
+        timeout: float = 30
     ):
         self.triton_url = triton_url
         self.model_name = model_name
@@ -160,7 +160,7 @@ class TritonClient:
             inputs=inputs,
             outputs=outputs,
             request_id=request_id,
-            timeout=self.timeout
+            timeout=int(self.timeout)
         )
 
         logits = response.as_numpy("logits")[0]

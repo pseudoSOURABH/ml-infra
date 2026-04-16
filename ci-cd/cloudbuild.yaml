@@ -84,7 +84,7 @@ steps:
       - '-f'
       - 'Dockerfile.backend'
       - '--build-arg'
-      - 'TRITON_GRPC_PORT=9000'    # ✅ Updated to actual gRPC port
+      - 'TRITON_GRPC_PORT=8001'    # ✅ Updated to actual gRPC port
       - '.'
 
   # ── 4b: Build frontend image ─────────────────────────────────────────────

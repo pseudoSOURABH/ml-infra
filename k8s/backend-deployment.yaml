@@ -24,7 +24,7 @@ spec:
               name: http
           env:
             - name: TRITON_URL
-              value: "clinical-assertion-grpc.triton.svc.cluster.local:9000"
+              value: "clinical-assertion-grpc.triton.svc.cluster.local:8001"
             - name: MODEL_NAME
               value: "clinical_assertion"
           resources:

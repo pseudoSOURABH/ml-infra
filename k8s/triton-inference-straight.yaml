@@ -14,26 +14,16 @@ spec:
       modelFormat:
         name: triton
       storageUri: "gs://project-e8b9570a-b660-4f1a-ae2-ml-models/clinical_assertion"
-      resources:
-        requests:
-          cpu: "1000m"
-          memory: "2Gi"
-        limits:
-          cpu: "2000m"
-          memory: "4Gi"
-    # Container-level overrides for RawDeployment
-    containers:
-    - name: kserve-container
+      
       args:
-      - tritonserver
-      - --model-repository=/mnt/models
-      - --strict-model-config=false
-      - --http-port=8080
-      - --grpc-port=8001
-      - --metrics-port=8002
-      - --log-verbose=1
-      - --backend-config=onnxruntime,inter_op_thread_count=2
-      - --backend-config=onnxruntime,intra_op_thread_count=2
+        - --model-repository=/mnt/models
+        - --strict-model-config=false
+        - --http-port=8080
+        - --grpc-port=8001
+        - --metrics-port=8002
+        - --log-verbose=1
+        - --backend-config=onnxruntime,inter_op_thread_count=2
+        - --backend-config=onnxruntime,intra_op_thread_count=2
       resources:
         requests:
           cpu: "1000m"
@@ -41,17 +31,5 @@ spec:
         limits:
           cpu: "2000m"
           memory: "4Gi"
-      readinessProbe:
-        httpGet:
-          path: /v2/health/ready
-          port: 8080
-        initialDelaySeconds: 30
-        periodSeconds: 10
-      livenessProbe:
-        httpGet:
-          path: /v2/health/live
-          port: 8080
-        initialDelaySeconds: 60
-        periodSeconds: 30
     nodeSelector:
       cloud.google.com/gke-nodepool: cpu-app-pool-v3
