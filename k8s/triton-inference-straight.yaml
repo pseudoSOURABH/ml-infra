@@ -14,7 +14,6 @@ spec:
       modelFormat:
         name: triton
       storageUri: "gs://project-e8b9570a-b660-4f1a-ae2-ml-models/clinical_assertion"
-      
       args:
         - --model-repository=/mnt/models
         - --strict-model-config=false
@@ -24,6 +23,10 @@ spec:
         - --log-verbose=1
         - --backend-config=onnxruntime,inter_op_thread_count=2
         - --backend-config=onnxruntime,intra_op_thread_count=2
+        - --trace-config=triton,level=TIMESTAMPS
+        - --trace-config=triton,file=global_trace.log
+        - --trace-config=triton,rate=1000
+        - --trace-config=triton,count=-1
       resources:
         requests:
           cpu: "1000m"

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TRITON_URL = os.getenv("TRITON_URL", "clinical-assertion-grpc.triton.svc.cluster.local:8001")
 MODEL_NAME = os.getenv("MODEL_NAME", "clinical_assertion")
-MAX_SEQ_LENGTH = int(os.getenv("MAX_SEQ_LENGTH", "512"))
+MAX_SEQ_LENGTH = int(os.getenv("MAX_SEQ_LENGTH", "128"))
 BATCH_SIZE_LIMIT = int(os.getenv("BATCH_SIZE_LIMIT", "32"))
 
 tokenizer = None
@@ -125,8 +125,9 @@ async def predict(request: PredictRequest):
         return_tensors="np",
         truncation=True,
         max_length=MAX_SEQ_LENGTH,
-        padding="max_length"
+        padding=True                 # ← pads only to the longest token in the batch
     )
+
     t_tok = (time.time() - t_tok_start) * 1000
 
     # Triton inference
