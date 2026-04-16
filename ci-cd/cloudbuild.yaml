@@ -75,6 +75,7 @@ steps:
     dir: '.'
     args:
       - 'build'
+      - '--build-arg'
       - 'CACHEBUST=$COMMIT_SHA
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/ml-repo/clinical-backend:$COMMIT_SHA'
