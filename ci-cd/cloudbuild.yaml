@@ -68,7 +68,7 @@ steps:
       - 'TRANSFORMERS_OFFLINE=1'
       - 'HF_HUB_OFFLINE=1'
 
-  # ── 4a: Build backend image (with cache busting) ─────────────────────────
+  # ── 4a: Build backend image (with cache busting)) ─────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-backend'
     waitFor: ['pull-app-cache']
