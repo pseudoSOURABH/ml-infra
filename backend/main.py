@@ -145,7 +145,7 @@ async def predict(request: PredictRequest):
 
 @app.post("/predict/batch", response_model=BatchPredictResponse, tags=["Inference"])
 async def predict_batch(request: BatchPredictRequest):
-    if not triton_client or not await triton_client.is_model_ready():
+    if not triton_client or not triton_client.model_ready:
         raise HTTPException(status_code=503, detail="Model not ready")
 
     if len(request.sentences) > BATCH_SIZE_LIMIT:
