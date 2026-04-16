@@ -79,19 +79,14 @@ class TritonClient:
                 return False
 
     def _prepare_inputs(self, tokens: Dict[str, np.ndarray]) -> List[grpcclient.InferInput]:
-        """
-        Convert tokenizer output to Triton inputs.
-        - Forces INT64 dtype.
-        - Flattens the data (ravel) for robust serialisation.
-        """
         inputs = []
         for name, data in tokens.items():
             if name in ["input_ids", "attention_mask", "token_type_ids"]:
-                # Ensure correct dtype and memory layout
+                # Ensure correct dtype and shape
                 data = data.astype(np.int64)
                 shape = tuple(int(dim) for dim in data.shape)
                 infer_input = grpcclient.InferInput(name, shape, "INT64")
-                infer_input.set_data_from_numpy(data.ravel())   # flatten
+                infer_input.set_data_from_numpy(data)   # NO ravel()
                 inputs.append(infer_input)
         return inputs
 
