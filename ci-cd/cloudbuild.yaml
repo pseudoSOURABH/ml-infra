@@ -127,7 +127,7 @@ steps:
   #   args:
   #     - '-c'
   #     - |
-  #       if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
+  #       if [[ "$BRANCH_NAME" != "feat/optimize_latency" && -z "$TAG_NAME" ]]; then
   #         echo "Skipping deployment for branch: $BRANCH_NAME"
   #         exit 0
   #       fi
@@ -158,7 +158,7 @@ steps:
   #       envsubst < k8s/backend-deployment.yaml  | kubectl apply -f -
   #       envsubst < k8s/frontend-deployment.yaml | kubectl apply -f -
 
-  #       # 6. Apply BackendConfig for LoadBalancer health check (optional)
+  #       # 6. Apply BackendConfig for LoadBalancer health check (optional))
   #       kubectl apply -f k8s/backendconfig.yaml
 
   #       # 7. Apply Ingress (if you prefer Ingress over direct LoadBalancer)
@@ -187,7 +187,7 @@ steps:
     args:
       - '-c'
       - |
-        if [[ "$BRANCH_NAME" != "feat/model-deployment-pipeline" && -z "$TAG_NAME" ]]; then
+        if [[ "$BRANCH_NAME" != "feat/optimize_latency" && -z "$TAG_NAME" ]]; then
           echo "Skipping deployment for branch: $BRANCH_NAME"
           exit 0
         fi
