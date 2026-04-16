@@ -97,18 +97,18 @@ class TritonClient:
                 logger.error(f"Model readiness check failed: {e}")
                 return False
 
+   
+
     def _prepare_inputs(self, tokens: Dict[str, np.ndarray]) -> List[grpcclient.InferInput]:
         """Convert tokenizer output to Triton inputs."""
         inputs = []
         for name, data in tokens.items():
             if name in ["input_ids", "attention_mask", "token_type_ids"]:
-                # Ensure shape is a tuple of Python ints
+                # Force INT64 dtype (Triton expects exactly this)
+                data = data.astype(np.int64)
+                # Ensure shape is a tuple of Python ints (no np.int64)
                 shape = tuple(int(dim) for dim in data.shape)
-                infer_input = grpcclient.InferInput(
-                    name,
-                    shape,
-                    np_to_triton_dtype(data.dtype)
-                )
+                infer_input = grpcclient.InferInput(name, shape, "INT64")
                 infer_input.set_data_from_numpy(data)
                 inputs.append(infer_input)
         return inputs
