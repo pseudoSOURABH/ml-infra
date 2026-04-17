@@ -1,3 +1,6 @@
+Here is the complete, combined `README.md` with the original content preserved in full and the new **GCP Resource Configuration** section appended at the bottom.
+
+```markdown
 # ml-infra
 
 A production-grade ML inference infrastructure on **Google Kubernetes Engine (GKE)**, featuring an automated model optimization pipeline, NVIDIA Triton Inference Server, a REST backend, a web frontend, full CI/CD via Google Cloud Build, and observability through Prometheus + Grafana.
@@ -18,6 +21,7 @@ A production-grade ML inference infrastructure on **Google Kubernetes Engine (GK
 - [Getting Started](#getting-started)
 - [CI/CD Flow](#cicd-flow)
 - [Observability](#observability)
+- [GCP Resource Configuration](#gcp-resource-configuration)
 
 ---
 
@@ -296,3 +300,262 @@ Every push to the main branch triggers `ci-cd/cloudbuild.yaml`, which executes t
 | Triton Metrics (`triton-metrics-server.yaml`) | Exposes model throughput, latency, queue depth, and GPU utilization |
 | Prometheus (`triton-service-monitor.yaml`) | Scrapes and stores Triton metrics |
 | Grafana (`grafana-loadbalancer.yaml`) | Visualizes metrics via dashboards; exposed externally via LoadBalancer |
+
+---
+
+## GCP Resource Configuration
+
+This section documents the Google Cloud Platform (GCP) infrastructure configuration, including IAM, networking, compute resources, and additional platform services like KServe and Prometheus.
+
+### Identity and Access Management (IAM)
+
+#### 1. Application Service Account (Workload Identity)
+
+**GSA:** `ml-platform-sa@${PROJECT_ID}.iam.gserviceaccount.com`
+
+**Purpose:** Enables GKE workloads to securely access Google Cloud APIs via Workload Identity, eliminating the need for static JSON keys.
+
+| Role | IAM Permission | Use Case |
+|------|----------------|----------|
+| Artifact Registry Reader | `roles/artifactregistry.reader` | Image pulls during Pod initialization. |
+| Logs Writer | `roles/logging.logWriter` | Application telemetry and structured logging. |
+| Monitoring Metric Writer | `roles/monitoring.metricWriter` | Custom metrics for observability. |
+| Storage Object Admin | `roles/storage.objectAdmin` | CRUD operations on ML model artifacts and data. |
+
+#### 2. CI/CD Pipeline Service Account
+
+**Purpose:** Automates the build, test, and deployment lifecycle (e.g., Cloud Build).
+
+| Role | IAM Permission | Use Case |
+|------|----------------|----------|
+| Artifact Registry Writer | `roles/artifactregistry.writer` | Pushing Docker images post-build. |
+| GKE Developer | `roles/container.developer` | Orchestrating cluster workloads and deployments. |
+| Secret Manager Accessor | `roles/secretmanager.secretAccessor` | Retrieving build-time credentials and secrets. |
+| Storage Admin | `roles/storage.admin` | Managing CI/CD assets, logs, and state files. |
+| Logs Writer | `roles/logging.logWriter` | Auditability of pipeline execution stages. |
+
+#### 3. Compute Engine Default Service Account
+
+**Identity:** `{PROJECT_NUMBER}-compute@developer.gserviceaccount.com`
+
+**Context:** Serves as the default Node Identity for the GKE cluster.
+
+- **Node Lifecycle:** Used by the GKE node agent for Compute Engine API interactions.
+- **System Telemetry:** Facilitates reporting of VM-level health and metrics.
+- **Legacy Scopes:** Utilized for default resource access during initial cluster provisioning.
+
+> **Security Note:** It is recommended to replace this with a Custom Node Service Account in production to enforce the Principle of Least Privilege.
+
+### IAM Configuration and Workload Identity Implementation
+
+#### 1. Application Service Account Authorization
+
+Grant required resource access to the Google Service Account (GSA).
+
+```bash
+# Roles: Artifact Registry Reader, Logs Writer, Monitoring Metric Writer, Storage Object Admin
+for role in artifactregistry.reader logging.logWriter monitoring.metricWriter storage.objectAdmin; do
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:ml-platform-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/$role"
+done
+```
+
+#### 2. CI/CD Pipeline Service Account Authorization
+
+Grant deployment and registry permissions to the CI/CD service account.
+
+```bash
+# Roles: Artifact Registry Writer, Container Developer, Secret Manager Accessor, Storage Admin
+for role in artifactregistry.writer container.developer secretmanager.secretAccessor storage.admin; do
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:cicd-pipeline-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/$role"
+done
+```
+
+#### 3. Workload Identity & KSA Integration
+
+Establish the security binding between the Kubernetes Service Account (KSA) and the GSA.
+
+```bash
+# Bind GSA to KSA
+gcloud iam service-accounts add-iam-policy-binding ml-platform-sa@${PROJECT_ID}.iam.gserviceaccount.com \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/${KSA_NAME}]"
+
+# Create and Annotate KSA
+kubectl create serviceaccount ${KSA_NAME} --namespace ${K8S_NAMESPACE}
+
+kubectl annotate serviceaccount ${KSA_NAME} \
+    --namespace ${K8S_NAMESPACE} \
+    iam.gke.io/gcp-service-account=ml-platform-sa@${PROJECT_ID}.iam.gserviceaccount.com
+```
+
+#### 4. Verification
+
+Validate policy application for the specified identity.
+
+```bash
+gcloud projects get-iam-policy ${PROJECT_ID} \
+    --flatten="bindings[].members" \
+    --format="table(bindings.role)" \
+    --filter="bindings.members:ml-platform-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+### Infrastructure Resource Provisioning
+
+The following commands utilize the Google Cloud CLI to provision the container registry and object storage resources.
+
+#### 1. Artifact Registry
+
+Establish a secure, regional repository for Docker container images.
+
+```bash
+gcloud artifacts repositories create ml-repo \
+    --repository-format=docker \
+    --location=us-central1 \
+    --description="Production Docker repository for ML platform"
+```
+
+#### 2. Cloud Storage (GCS)
+
+Create a regional storage bucket for ML artifacts and data. The `--uniform-bucket-level-access` flag is included to align with security best practices for IAM-based access control.
+
+```bash
+# Replace [BUCKET_NAME] with a globally unique identifier
+export BUCKET_NAME="ml-artifacts-${PROJECT_ID}"
+
+gcloud storage buckets create gs://${BUCKET_NAME} \
+    --location=us-central1 \
+    --uniform-bucket-level-access
+```
+
+### GKE Cluster and Compute Configuration
+
+This section outlines the GKE cluster and node pool configuration. Due to quota limitations within the GCP Free Tier regarding GPU availability, the infrastructure is optimized for CPU-based compute.
+
+#### 1. Control Plane & System Node Pool
+
+The cluster is initialized with a managed system node pool to handle core Kubernetes services and cluster administration.
+
+```bash
+gcloud container clusters create ${CLUSTER_NAME} \
+    --zone=us-central1-a \
+    --workload-pool=${PROJECT_ID}.svc.id.goog \
+    --enable-ip-alias \
+    --release-channel=regular \
+    --machine-type=e2-standard-2 \
+    --num-nodes=1 \
+    --disk-type=pd-standard \
+    --disk-size=30 \
+    --enable-autoscaling \
+    --min-nodes=1 \
+    --max-nodes=1
+```
+
+#### 2. Application Node Pool (CPU Optimized)
+
+A dedicated node pool is provisioned for application workloads. In the absence of GPU-accelerated nodes, high-concurrency CPU nodes are utilized to support ML inference and platform services.
+
+```bash
+gcloud container node-pools create cpu-app-pool \
+    --cluster=${CLUSTER_NAME} \
+    --zone=us-central1-a \
+    --machine-type=e2-standard-2 \
+    --num-nodes=2 \
+    --enable-autoscaling \
+    --min-nodes=1 \
+    --max-nodes=4 \
+    --disk-type=pd-standard \
+    --disk-size=30
+```
+
+#### 3. Static External IP for Frontend
+
+Create a static IP address to expose the frontend service to the internet.
+
+```bash
+gcloud compute addresses create frontend-static-ip \
+    --addresses 34.169.18.142 \
+    --region us-west1
+```
+
+### Monitoring Stack Installation (Prometheus + Grafana)
+
+```bash
+# Add the Prometheus Community Helm repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Create a dedicated namespace
+kubectl create namespace monitoring
+
+# Install the stack with persistent storage
+helm install prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+  --set grafana.adminPassword=your-admin-password
+```
+
+### Instrument FastAPI Backend with Prometheus Metrics
+
+Your FastAPI backend needs instrumentation to expose HTTP request metrics (request count, latency histograms, etc.). Use the `prometheus-fastapi-instrumentator` library for minimal configuration.
+
+**Add to `backend/requirements.txt`:**
+```
+prometheus-fastapi-instrumentator==2.0.0
+```
+
+**Update `backend/main.py` to add instrumentation:**
+
+Add these lines near the top (after `app = FastAPI(...)`):
+
+```python
+from prometheus_fastapi_instrumentator import Instrumentator
+
+# ... existing FastAPI app creation ...
+
+# Instrument the app with default metrics (request counts, latency histograms)
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+```
+
+### KServe Deployment and Configuration
+
+This documentation covers the deployment of KServe as the core inference orchestration layer. It is critical to select the appropriate deployment mode based on your service-level agreements (SLAs) for latency.
+
+The KServe `quick_install.sh` script facilitates the automated deployment of the inference platform. For production environments where granular control and minimal latency are required, **RawDeployment** mode is the recommended configuration.
+
+#### Deployment Command
+
+```bash
+# Execute quick install with RawDeployment flag for high-performance requirements
+curl -s "https://raw.githubusercontent.com/kserve/kserve/release-0.10/hack/quick_install.sh" | bash -s -- -r
+```
+
+#### Components and Infrastructure
+
+The automated installation provisions the following stack:
+
+- **Istio:** Manages the service mesh for secure, observable traffic routing.
+- **Cert-manager:** Automates TLS certificate issuance and rotation.
+- **KServe Controllers:** Deploys the Custom Resource Definitions (CRDs) and operators required to manage InferenceServices.
+
+#### Deployment Mode Comparison
+
+| Flag | Mode | Operational Impact |
+|------|------|-------------------|
+| `-s` | Serverless | Utilizes Knative for request-based autoscaling (Scale-to-Zero). |
+| `-r` | RawDeployment | Utilizes native Kubernetes Deployments. Bypasses Knative and queue-proxy sidecars. |
+| `-u` | Uninstall | Systematic removal of all KServe-related resources and dependencies. |
+
+> **⚠️ CRITICAL OPERATIONAL ADVISORY**  
+> **Latency Constraints in Serverless Mode:**  
+> While Knative (Serverless mode) provides significant advantages for cost management and automated scaling, it is **not recommended** for real-time, low-latency inference workloads.  
+> Knative introduces a `queue-proxy` sidecar that intercepts all incoming traffic. If a pod is in a "cold" state or scaling up, requests are held in a queue until the container is ready, leading to significant latency spikes.  
+> **Production Recommendation:**  
+> To achieve deterministic, low-latency response times, utilize **RawDeployment** mode. This ensures traffic reaches the inference container directly without sidecar-induced queuing. For production systems requiring high availability, avoid "Scale-to-Zero" and maintain a minimum "warm" pod count or implement custom pre-warming strategies.
+```
+
+This full `README.md` now contains everything you provided—the original project documentation plus the new GCP configuration details in a dedicated section at the end. You can copy and paste it directly into your repository.
