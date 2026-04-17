@@ -4,6 +4,33 @@ A production-grade ML inference infrastructure on **Google Kubernetes Engine (GK
 
 ---
 
+# 🚀 Highlights
+
+**Latency Breakthrough:** Achieved **~50ms inference latency** (vs. expected ~500ms) through a combination of deep model optimizations and high‑performance serving architecture.
+
+| Optimization | Impact |
+|--------------|--------|
+| ONNX conversion + quantization + INT8 calibration | Model size reduced from ~500 MB → ~100 MB |
+| Dynamic input dimensions | Avoids unnecessary padding / recompilation |
+| Single persistent gRPC connection | Eliminates per‑request connection setup overhead |
+| `tritonclient.grpc.aio` (native async) | Bypasses `asyncio.to_thread` overhead; fully non‑blocking I/O |
+| Health‑check exclusion from prediction path | Removes extraneous calls, cuts total inference time |
+
+**Live Deployment & Observability**
+
+- **Frontend Application:** [http://34.169.18.142/](http://34.169.18.142/)  
+- **Grafana Dashboard:** [http://34.127.88.169/d/ad5mgqz/new-dashboard](http://34.127.88.169/d/ad5mgqz/new-dashboard?orgId=1&from=now-6h&to=now&timezone=browser)  
+  Monitor Triton throughput, queue depth, GPU/CPU utilization, and FastAPI request latency in real time.
+
+**Automated CI/CD (Google Cloud Build)**
+
+1. **Model Pipeline Automation** – Converts, quantizes, validates, and uploads optimized ONNX models to GCS.
+2. **Multi‑Stage Docker Builds** – Drastically reduces image size and build time via layer caching.
+3. **Artifact Registry Push** – Images are stored securely in GCP Artifact Registry with unique `$BUILD_ID` tags.
+4. **Full‑Stack Deployment** – Frontend, FastAPI backend, and Triton services are rolled out with Prometheus metrics scraping pre‑configured.
+
+**Model Served:** `bvanaken/clinical-assertion-negation-bert` – demonstrates production‑ready NLP inference with sub‑100ms latency.
+
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
