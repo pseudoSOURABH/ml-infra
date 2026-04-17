@@ -23,21 +23,75 @@ A production-grade ML inference infrastructure on **Google Kubernetes Engine (GK
 
 ## Architecture Overview
 
+### Traffic Flow
+
 ```
-                        ┌─────────────────────────────────────────────┐
-                        │              GKE Cluster                     │
-                        │                                              │
-  User ──► Frontend ──► │  Backend (FastAPI) ──► Triton Inference      │
-                        │                         Server (gRPC)        │
-                        │                                              │
-                        │  Prometheus ◄── Triton Metrics               │
-                        │  Grafana    ◄── Prometheus                   │
-                        └─────────────────────────────────────────────┘
-                                          ▲
-                              Cloud Build CI/CD Pipeline
-                              (Build → Optimize → Push → Deploy)
-                                          ▲
-                                    GCS Model Store
+                                    ┌──────────────────────────────────────────────────────────────────┐
+                                    │                        GKE Cluster                                │
+                                    │                                                                   │
+                                    │  ┌─────────────────────┐       ┌──────────────────────────────┐  │
+                                    │  │   frontend namespace │       │       api namespace           │  │
+  User                              │  │                     │       │                              │  │
+   │                                │  │  ┌───────────────┐  │ HTTP  │  ┌────────────────────────┐  │  │
+   │  HTTPS to LoadBalancer IP      │  │  │   Frontend    │──┼───────┼─►│       Backend          │  │  │
+   └───────────────────────────────►│  │  │  (Flask)      │  │       │  │      (FastAPI)         │  │  │
+                                    │  │  └───────────────┘  │       │  └──────────┬─────────────┘  │  │
+                                    │  └─────────────────────┘       │             │ gRPC :8001     │  │
+                                    │                                 └─────────────┼────────────────┘  │
+                                    │                                               │                   │
+                                    │                                 ┌─────────────▼────────────────┐  │
+                                    │                                 │      triton namespace         │  │
+                                    │                                 │                              │  │
+                                    │                                 │  ┌────────────────────────┐  │  │
+                                    │                                 │  │    Triton Inference    │  │  │
+                                    │                                 │  │       Server           │  │  │
+                                    │                                 │  │  gRPC :8001            │  │  │
+                                    │                                 │  │  metrics :8002         │──┼──┼──┐
+                                    │                                 │  └────────────────────────┘  │  │  │
+                                    │                                 └──────────────────────────────┘  │  │
+                                    │                                                                   │  │
+                                    │  ┌────────────────────────────────────────────────────────────┐  │  │
+                                    │  │                  monitoring namespace                        │  │  │
+                                    │  │                                                             │  │  │
+                                    │  │  Triton Metrics Svc (:8002) ◄──────────────────────────────┼──┼──┘
+                                    │  │          │                                                  │  │
+                                    │  │          │ scrape (ServiceMonitor)                          │  │
+                                    │  │          ▼                                                  │  │
+                                    │  │      Prometheus ──────────► Grafana (LoadBalancer) ◄────── User
+                                    │  │                    query                                    │  │
+                                    │  └────────────────────────────────────────────────────────────┘  │
+                                    └──────────────────────────────────────────────────────────────────┘
+```
+
+### CI/CD Pipeline (Cloud Build)
+
+Every push to the main branch triggers `ci-cd/cloudbuild.yaml`, which runs the following steps in sequence:
+
+```
+  Step 1                   Step 2                        Step 3
+  ┌──────────────────┐     ┌───────────────────────┐     ┌──────────────────────┐
+  │ Build pipeline   │     │ Run model pipeline     │     │   Upload to GCS      │
+  │ Docker image     │────►│                       │────►│                      │
+  │ (Dockerfile      │     │  raw model            │     │  optimized ONNX      │
+  │  .pipeline)      │     │     │ convert_to_onnx  │     │  model + config.pbtxt│
+  └──────────────────┘     │     ▼                 │     └──────────┬───────────┘
+                           │  ONNX format          │                │ model load
+                           │     │ optimize_model   │                ▼
+                           │     ▼                 │        ┌───────────────┐
+                           │  quantized + INT8     │        │  GCS bucket   │
+                           │     │ validate_model  │        │  (model store)│
+                           │     ▼                 │        └───────┬───────┘
+                           │  performance check    │                │
+                           └───────────────────────┘                │ Triton reads
+                                                                     │ model on startup
+  Step 4                   Step 5                                    ▼
+  ┌──────────────────────────────┐     ┌──────────────────────────────────────┐
+  │ Build & push service images  │     │    Deploy to GKE                      │
+  │                              │     │                                       │
+  │  backend  → GCR              │────►│  kubectl apply k8s/ manifests         │
+  │  frontend → GCR              │     │  with new image tag ($BUILD_ID)       │
+  │  triton   → GCR              │     │  rolling update on each service       │
+  └──────────────────────────────┘     └──────────────────────────────────────┘
 ```
 
 ---
