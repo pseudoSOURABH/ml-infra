@@ -20,6 +20,7 @@ A production-grade ML inference infrastructure on **Google Kubernetes Engine (GK
 
 - **Frontend Application:** [http://34.169.18.142/](http://34.169.18.142/)  
 - **Grafana Dashboard:** [http://34.127.88.169/d/ad5mgqz/new-dashboard](http://34.127.88.169/d/ad5mgqz/new-dashboard?orgId=1&from=now-6h&to=now&timezone=browser)  
+User: "admin"  Password: "UnderArmourr02"
   Monitor Triton throughput, queue depth, GPU/CPU utilization, and FastAPI request latency in real time.
 
 **Automated CI/CD (Google Cloud Build)**
